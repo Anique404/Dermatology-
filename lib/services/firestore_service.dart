@@ -8,44 +8,146 @@ import '../utils/constants.dart';
 class FirestoreService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  // Get all users (for admin)
-  Future<List<Map<String, dynamic>>> getAllUsers() async {
+  Map<String, dynamic> _userFromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
+    final data = doc.data() ?? {};
+    return {
+      'uid': data['uid'] ?? doc.id,
+      'email': data['email'] ?? 'Unknown',
+      'password': data['password'],
+      'createdAt': data['createdAt'],
+      'isAdmin': data['isAdmin'] ?? false,
+    };
+  }
+
+  Future<void> ensureUserDocumentExists(
+    String userId, {
+    String? email,
+    String? password,
+  }) async {
+    final userRef = _firestore.collection('users').doc(userId);
+    final snapshot = await userRef.get();
+    final data = <String, dynamic>{
+      'uid': userId,
+    };
+    if (email != null && email.isNotEmpty) {
+      data['email'] = email;
+    }
+    if (password != null && password.isNotEmpty) {
+      data['password'] = password;
+    }
+    if (!snapshot.exists) {
+      data['email'] = email ?? 'Unknown';
+      data['createdAt'] = FieldValue.serverTimestamp();
+      data['isAdmin'] = AdminCredentials.isAdminEmail(email);
+    }
+    await userRef.set(data, SetOptions(merge: true));
+  }
+
+  Future<void> repairMissingUserDocs() async {
     try {
-      print('📂 Fetching users from Firestore...');
-      final snapshot = await FirebaseFirestore.instance
-          .collection('users')
-          .get();
-      print('📄 Documents found: ${snapshot.docs.length}');
-      return snapshot.docs.map((doc) {
-        final data = doc.data();
-        return {
-          'uid': doc.id,
-          'email': data['email'] ?? 'Unknown',
-          'createdAt': data['createdAt'],
-          'isAdmin': data['isAdmin'] ?? false,
-        };
-      }).toList();
+      final chatSnapshots = await _firestore.collectionGroup('chats').get();
+      final userIds = <String>{};
+      for (final chat in chatSnapshots.docs) {
+        final parent = chat.reference.parent.parent;
+        if (parent != null) userIds.add(parent.id);
+        final data = chat.data();
+        final fromField = data['userId']?.toString();
+        if (fromField != null && fromField.isNotEmpty) {
+          userIds.add(fromField);
+        }
+      }
+
+      try {
+        final topLevel = await _firestore.collection('chats').get();
+        for (final chat in topLevel.docs) {
+          final fromField = chat.data()['userId']?.toString();
+          if (fromField != null && fromField.isNotEmpty) {
+            userIds.add(fromField);
+          }
+        }
+      } catch (_) {}
+
+      for (final userId in userIds) {
+        await ensureUserDocumentExists(userId);
+      }
     } catch (e) {
-      print('❌ Error getting users: $e');
-      return [];
+      print('❌ Repair missing users error: $e');
     }
   }
 
-  // Create new chat
+  // Get all users (for admin)
+  Future<List<Map<String, dynamic>>> getAllUsers() async {
+    try {
+      await repairMissingUserDocs();
+      print('📂 Fetching users from Firestore...');
+      final snapshot = await _firestore.collection('users').get();
+      print('📄 Documents found: ${snapshot.docs.length}');
+      return snapshot.docs.map(_userFromDoc).toList();
+    } catch (e) {
+      print('❌ Error getting users: $e');
+      rethrow;
+    }
+  }
+
+  Stream<List<Map<String, dynamic>>> getUsersStream() {
+    return _firestore.collection('users').snapshots().map((snapshot) {
+      return snapshot.docs
+          .where((doc) => doc.exists && doc.data().isNotEmpty)
+          .map(_userFromDoc)
+          .toList();
+    });
+  }
+
+  CollectionReference<Map<String, dynamic>> _userChatCollection(String userId) {
+    return _firestore
+        .collection(FirestorePaths.usersCollection)
+        .doc(userId)
+        .collection(FirestorePaths.chatsCollection);
+  }
+
+  DocumentReference<Map<String, dynamic>> _userChatDoc(
+    String userId,
+    String chatId,
+  ) {
+    return _userChatCollection(userId).doc(chatId);
+  }
+
+  DocumentReference<Map<String, dynamic>> _topLevelChatDoc(String chatId) {
+    return _firestore.collection(FirestorePaths.chatsCollection).doc(chatId);
+  }
+
+  Map<String, dynamic> _chatWriteData(String userId, {String title = 'New Chat'}) {
+    return {
+      'userId': userId,
+      'title': title,
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+      'messages': [],
+    };
+  }
+
+  Map<String, dynamic> _messageWriteMap(MessageModel message) {
+    final map = Map<String, dynamic>.from(message.toMap());
+    if (map['timestamp'] is DateTime) {
+      map['timestamp'] = Timestamp.fromDate(map['timestamp'] as DateTime);
+    }
+    return map;
+  }
+
+  // Create new chat (user subcollection + top-level chats)
   Future<String> createChat(String userId, String initialMessage) async {
     try {
-      final docRef = await _firestore
-          .collection(FirestorePaths.usersCollection)
-          .doc(userId)
-          .collection(FirestorePaths.chatsCollection)
-          .add({
-            'title': 'New Chat',
-            'createdAt': DateTime.now(),
-            'updatedAt': DateTime.now(),
-            'messages': [],
-          });
+      await ensureUserDocumentExists(userId);
+      final data = _chatWriteData(userId, title: 'New Chat');
+      final userChatRef = _userChatCollection(userId).doc();
+      final chatId = userChatRef.id;
 
-      return docRef.id;
+      final batch = _firestore.batch();
+      batch.set(userChatRef, data);
+      batch.set(_topLevelChatDoc(chatId), data);
+      await batch.commit();
+
+      return chatId;
     } catch (e) {
       throw Exception('Failed to create chat: $e');
     }
@@ -54,10 +156,7 @@ class FirestoreService {
   // Get all chats for user
   Stream<List<ChatModel>> getUserChats(String userId) {
     try {
-      return _firestore
-          .collection(FirestorePaths.usersCollection)
-          .doc(userId)
-          .collection(FirestorePaths.chatsCollection)
+      return _userChatCollection(userId)
           .orderBy('updatedAt', descending: true)
           .snapshots()
           .map((snapshot) {
@@ -77,38 +176,30 @@ class FirestoreService {
     String userId,
     String chatId,
   ) {
-    return _firestore
-        .collection('users')
-        .doc(userId)
-        .collection('chats')
-        .doc(chatId)
+    return _userChatDoc(userId, chatId)
         .collection('messages')
         .orderBy('timestamp', descending: false)
         .snapshots()
         .map((snapshot) {
           return snapshot.docs.map((doc) {
             final data = doc.data();
-            return MessageModel(
-              id: doc.id,
-              content: data['content'] ?? '',
-              sender: data['sender'] ?? 'user',
-              timestamp:
-                  (data['timestamp'] as Timestamp?)?.toDate() ?? DateTime.now(),
-              imagePath: data['imagePath'],
-            );
+            data['id'] = doc.id;
+            return MessageModel.fromMap(data);
           }).toList();
         });
   }
 
   Future<ChatModel?> getChat(String userId, String chatId) async {
     try {
-      final doc = await _firestore
-          .collection(FirestorePaths.usersCollection)
-          .doc(userId)
-          .collection(FirestorePaths.chatsCollection)
-          .doc(chatId)
-          .get();
-      if (!doc.exists || doc.data() == null) return null;
+      final doc = await _userChatDoc(userId, chatId).get();
+      if (!doc.exists || doc.data() == null) {
+        final topLevel = await _topLevelChatDoc(chatId).get();
+        if (!topLevel.exists || topLevel.data() == null) return null;
+        final data = topLevel.data()!;
+        data['id'] = topLevel.id;
+        data['userId'] = data['userId'] ?? userId;
+        return ChatModel.fromMap(data);
+      }
 
       final data = doc.data()!;
       data['id'] = doc.id;
@@ -119,6 +210,33 @@ class FirestoreService {
     }
   }
 
+  Future<List<MessageModel>> getChatMessages(String userId, String chatId) async {
+    try {
+      final chat = await getChat(userId, chatId);
+      if (chat != null && chat.messages.isNotEmpty) {
+        return chat.messages;
+      }
+
+      final snapshot = await _userChatDoc(userId, chatId)
+          .collection('messages')
+          .orderBy('timestamp', descending: false)
+          .get();
+
+      if (snapshot.docs.isNotEmpty) {
+        return snapshot.docs.map((doc) {
+          final data = doc.data();
+          data['id'] = doc.id;
+          return MessageModel.fromMap(data);
+        }).toList();
+      }
+
+      return chat?.messages ?? [];
+    } catch (e) {
+      print('❌ Failed to fetch chat messages: $e');
+      return [];
+    }
+  }
+
   // Add message to chat
   Future<void> addMessageToChat(
     String userId,
@@ -126,16 +244,23 @@ class FirestoreService {
     MessageModel message,
   ) async {
     try {
-      final chatRef = _firestore
-          .collection(FirestorePaths.usersCollection)
-          .doc(userId)
-          .collection(FirestorePaths.chatsCollection)
-          .doc(chatId);
+      final messageMap = _messageWriteMap(message);
+      final chatRef = _userChatDoc(userId, chatId);
+      final topLevelRef = _topLevelChatDoc(chatId);
 
-      await chatRef.update({
-        'messages': FieldValue.arrayUnion([message.toMap()]),
-        'updatedAt': DateTime.now(),
-      });
+      await chatRef.set({
+        'userId': userId,
+        'messages': FieldValue.arrayUnion([messageMap]),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      await topLevelRef.set({
+        'userId': userId,
+        'messages': FieldValue.arrayUnion([messageMap]),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      await chatRef.collection('messages').doc(message.id).set(messageMap);
     } catch (e) {
       throw Exception('Failed to add message: $e');
     }
@@ -147,26 +272,53 @@ class FirestoreService {
     String title,
   ) async {
     try {
-      await _firestore
-          .collection('users')
-          .doc(userId)
-          .collection('chats')
-          .doc(chatId)
-          .update({'title': title});
+      final payload = {
+        'title': title,
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+      await _userChatDoc(userId, chatId).set(payload, SetOptions(merge: true));
+      await _topLevelChatDoc(chatId).set({
+        ...payload,
+        'userId': userId,
+      }, SetOptions(merge: true));
     } catch (e) {
       print('❌ Update chat title error: $e');
+    }
+  }
+
+  Future<void> savePrediction({
+    required String userId,
+    required String chatId,
+    required String diseaseName,
+    required double confidence,
+    required String recommendation,
+  }) async {
+    try {
+      await _firestore.collection(FirestorePaths.predictionsCollection).add({
+        'userId': userId,
+        'chatId': chatId,
+        'diseaseName': diseaseName,
+        'confidence': confidence,
+        'recommendation': recommendation,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      print('❌ Save prediction error: $e');
     }
   }
 
   // Delete chat
   Future<void> deleteChat(String userId, String chatId) async {
     try {
-      await _firestore
-          .collection(FirestorePaths.usersCollection)
-          .doc(userId)
-          .collection(FirestorePaths.chatsCollection)
-          .doc(chatId)
-          .delete();
+      final chatRef = _userChatDoc(userId, chatId);
+      final messages = await chatRef.collection('messages').get();
+      final batch = _firestore.batch();
+      for (final doc in messages.docs) {
+        batch.delete(doc.reference);
+      }
+      batch.delete(chatRef);
+      batch.delete(_topLevelChatDoc(chatId));
+      await batch.commit();
     } catch (e) {
       throw Exception('Failed to delete chat: $e');
     }
@@ -174,25 +326,141 @@ class FirestoreService {
 
   // Get total users count
   Future<int> getTotalUsersCount() async {
+    await repairMissingUserDocs();
+    final snapshot = await _firestore.collection('users').get();
+    return snapshot.docs
+        .where((doc) => doc.exists && doc.data().isNotEmpty)
+        .length;
+  }
+
+  Future<int> getTotalChatsCount() async {
     try {
-      final snapshot = await _firestore
-          .collection(FirestorePaths.usersCollection)
-          .count()
-          .get();
-      return snapshot.count ?? 0;
+      final chatIds = <String>{};
+
+      final users = await _firestore.collection('users').get();
+      for (final userDoc in users.docs) {
+        final chats = await userDoc.reference.collection('chats').get();
+        for (final chat in chats.docs) {
+          chatIds.add(chat.id);
+        }
+      }
+
+      try {
+        final topLevel = await _firestore.collection('chats').get();
+        for (final chat in topLevel.docs) {
+          chatIds.add(chat.id);
+        }
+      } catch (e) {
+        print('❌ Top-level chats count error: $e');
+      }
+
+      return chatIds.length;
     } catch (e) {
-      throw Exception('Failed to get users count: $e');
+      print('❌ Failed to get chats count: $e');
+      return 0;
     }
+  }
+
+  bool _messageHasPrediction(dynamic message) {
+    if (message is! Map) return false;
+    final prediction = message['prediction'];
+    if (prediction != null) return true;
+    final content = (message['content'] ?? '').toString();
+    final sender = (message['sender'] ?? '').toString();
+    return sender == 'ai' && content.contains('🔍');
+  }
+
+  Future<int> getTotalPredictionsCount() async {
+    try {
+      try {
+        final predictions = await _firestore
+            .collection(FirestorePaths.predictionsCollection)
+            .get();
+        if (predictions.docs.isNotEmpty) {
+          return predictions.docs.length;
+        }
+      } catch (e) {
+        print('❌ Predictions collection count error: $e');
+      }
+
+      int count = 0;
+      final countedMessageIds = <String>{};
+
+      final users = await _firestore.collection('users').get();
+      for (final userDoc in users.docs) {
+        final chats = await userDoc.reference.collection('chats').get();
+        for (final chatDoc in chats.docs) {
+          final messages = chatDoc.data()['messages'];
+          if (messages is List) {
+            for (final msg in messages) {
+              if (_messageHasPrediction(msg)) {
+                final id = msg is Map ? (msg['id'] ?? '').toString() : '';
+                final key = id.isNotEmpty ? id : '${chatDoc.id}_$count';
+                if (countedMessageIds.add(key)) count++;
+              }
+            }
+          }
+
+          try {
+            final msgDocs =
+                await chatDoc.reference.collection('messages').get();
+            for (final msgDoc in msgDocs.docs) {
+              if (_messageHasPrediction(msgDoc.data())) {
+                if (countedMessageIds.add(msgDoc.id)) count++;
+              }
+            }
+          } catch (_) {}
+        }
+      }
+
+      return count;
+    } catch (e) {
+      print('❌ Failed to get predictions count: $e');
+      return 0;
+    }
+  }
+
+  Future<Map<String, int>> getAdminStats() async {
+    final users = await getTotalUsersCount();
+    final chats = await getTotalChatsCount();
+    final predictions = await getTotalPredictionsCount();
+    return {
+      'users': users,
+      'chats': chats,
+      'predictions': predictions,
+    };
+  }
+
+  Stream<Map<String, int>> watchAdminStats() async* {
+    yield await getAdminStats();
+
+    await for (final _ in _firestore.collection('users').snapshots()) {
+      yield await getAdminStats();
+    }
+  }
+
+  Stream<int> watchUsersCount() {
+    return _firestore.collection('users').snapshots().map((s) => s.docs.length);
+  }
+
+  Stream<int> watchChatsCount() async* {
+    yield await getTotalChatsCount();
+    await for (final _ in _firestore.collection('chats').snapshots()) {
+      yield await getTotalChatsCount();
+    }
+  }
+
+  Stream<int> watchPredictionsCount() {
+    return _firestore
+        .collection(FirestorePaths.predictionsCollection)
+        .snapshots()
+        .map((s) => s.docs.length);
   }
 
   // Get user's chat history (for admin panel)
   Future<List<ChatModel>> getUserChatHistory(String userId) async {
     try {
-      final snapshot = await _firestore
-          .collection(FirestorePaths.usersCollection)
-          .doc(userId)
-          .collection(FirestorePaths.chatsCollection)
-          .get();
+      final snapshot = await _userChatCollection(userId).get();
 
       return snapshot.docs.map((doc) {
         final data = doc.data();

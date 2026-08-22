@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
+import '../theme/theme_controller.dart';
 import '../utils/constants.dart';
-import '../screens/admin_screen.dart';
-import '../screens/chat_screen.dart'; // <-- ADD THIS
+import '../widgets/app_chrome.dart';
 
 // ============================================
 // LOGIN SCREEN
@@ -12,7 +14,7 @@ class LoginScreen extends StatefulWidget {
   final VoidCallback onSwitchToRegister;
 
   const LoginScreen({Key? key, required this.onSwitchToRegister})
-    : super(key: key);
+      : super(key: key);
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -76,36 +78,61 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
-      // ✅ Admin Check
-      if (email == 'admin@gmail.com' && password == 'admin123') {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const AdminScreen()),
-        );
-        setState(() => _isLoading = false);
-        return;
+      if (AdminCredentials.matches(email, password)) {
+        await _signInAdmin(email, password);
+      } else {
+        await _authService.login(email, password);
       }
 
-      // ✅ Normal Login - Firebase Authentication
-      final user = await _authService.login(email, password);
-
-      if (user != null && mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const ChatScreen()),
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        unawaited(
+          _authService.ensureUserDocument(user, password: password),
         );
-      } else {
+      }
+
+      if (!mounted) return;
+
+      if (user == null) {
         setState(() {
           _errorMessage = 'Login failed. Please try again.';
           _isLoading = false;
         });
+        return;
       }
+
+      final goToAdmin = AdminCredentials.isAdminEmail(user.email) ||
+          AdminCredentials.isAdminEmail(email) ||
+          AdminCredentials.matches(email, password);
+
+      Navigator.of(context).pushNamedAndRemoveUntil(
+        goToAdmin ? '/admin' : '/chat',
+        (route) => false,
+      );
     } on FirebaseAuthException catch (e) {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null && mounted) {
+        Navigator.of(context).pushNamedAndRemoveUntil(
+          AdminCredentials.isAdminEmail(user.email) ? '/admin' : '/chat',
+          (route) => false,
+        );
+        return;
+      }
+      if (!mounted) return;
       setState(() {
         _errorMessage = _getAuthErrorMessage(e.code);
         _isLoading = false;
       });
     } catch (e) {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null && mounted) {
+        Navigator.of(context).pushNamedAndRemoveUntil(
+          AdminCredentials.isAdminEmail(user.email) ? '/admin' : '/chat',
+          (route) => false,
+        );
+        return;
+      }
+      if (!mounted) return;
       setState(() {
         _errorMessage = 'An error occurred. Please try again.';
         _isLoading = false;
@@ -113,200 +140,165 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  Future<void> _signInAdmin(String email, String password) async {
+    try {
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
+    } on FirebaseAuthException catch (e) {
+      final canCreate = e.code == 'user-not-found' ||
+          e.code == 'invalid-credential' ||
+          e.code == 'wrong-password';
+      if (!canCreate) rethrow;
+
+      try {
+        await FirebaseAuth.instance.createUserWithEmailAndPassword(
+          email: email,
+          password: password,
+        );
+      } on FirebaseAuthException catch (createError) {
+        if (createError.code == 'email-already-in-use') {
+          await FirebaseAuth.instance.signInWithEmailAndPassword(
+            email: email,
+            password: password,
+          );
+        } else {
+          rethrow;
+        }
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    context.watch<ThemeController>();
     return Scaffold(
       backgroundColor: AppColors.darkBg,
-      body: SafeArea(
-        child: SingleChildScrollView(
-          child: Padding(
-            padding: const EdgeInsets.all(AppSpacing.large),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                SizedBox(height: MediaQuery.of(context).size.height * 0.1),
-                // App Logo & Title
-                Center(
+      body: AppBackground(
+        child: SafeArea(
+          child: Column(
+            children: [
+              Align(
+                alignment: Alignment.centerRight,
+                child: const ThemeToggleButton(),
+              ),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 8),
                   child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Container(
-                        width: 80,
-                        height: 80,
-                        decoration: BoxDecoration(
-                          color: AppColors.primaryColor,
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: const Icon(
-                          Icons.spa,
-                          color: Colors.white,
-                          size: 48,
-                        ),
-                      ),
-                      const SizedBox(height: AppSpacing.medium),
-                      const Text(
+                      SizedBox(height: MediaQuery.of(context).size.height * 0.04),
+                      const Center(child: BrandMark(size: 92, iconSize: 40)),
+                      const SizedBox(height: 18),
+                      Text(
                         'DermaAI',
                         style: AppTextStyles.headline1,
                         textAlign: TextAlign.center,
                       ),
-                      const SizedBox(height: AppSpacing.tiny),
-                      const Text(
-                        'Skin Care Assistant',
-                        style: AppTextStyles.caption,
+                      const SizedBox(height: 6),
+                      Text(
+                        'Clinical skin analysis, made simple',
+                        style: AppTextStyles.caption.copyWith(fontSize: 15),
                         textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 28),
+                      Container(
+                        padding: const EdgeInsets.fromLTRB(18, 22, 18, 20),
+                        decoration: AppDecorations.card,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(
+                              'Welcome back',
+                              style: AppTextStyles.headline2,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Sign in to continue your consultation',
+                              style: AppTextStyles.caption,
+                            ),
+                            const SizedBox(height: 20),
+                            TextField(
+                              controller: _emailController,
+                              style: AppTextStyles.bodyText,
+                              decoration: AppDecorations.input(
+                                hint: 'Email',
+                                prefixIcon: Icon(
+                                  Icons.mail_outline_rounded,
+                                  color: AppColors.primaryColor,
+                                ),
+                              ),
+                              keyboardType: TextInputType.emailAddress,
+                            ),
+                            const SizedBox(height: 12),
+                            TextField(
+                              controller: _passwordController,
+                              style: AppTextStyles.bodyText,
+                              obscureText: _obscurePassword,
+                              decoration: AppDecorations.input(
+                                hint: 'Password',
+                                prefixIcon: Icon(
+                                  Icons.lock_outline_rounded,
+                                  color: AppColors.primaryColor,
+                                ),
+                                suffixIcon: IconButton(
+                                  icon: Icon(
+                                    _obscurePassword
+                                        ? Icons.visibility_off_outlined
+                                        : Icons.visibility_outlined,
+                                    color: AppColors.muted,
+                                  ),
+                                  onPressed: () {
+                                    setState(() {
+                                      _obscurePassword = !_obscurePassword;
+                                    });
+                                  },
+                                ),
+                              ),
+                            ),
+                            if (_errorMessage != null) ...[
+                              const SizedBox(height: 14),
+                              ErrorBanner(message: _errorMessage!),
+                            ],
+                            const SizedBox(height: 18),
+                            GradientButton(
+                              label: 'Continue',
+                              isLoading: _isLoading,
+                              onPressed: _isLoading ? null : _handleLogin,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 22),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            "Don't have an account? ",
+                            style: AppTextStyles.bodyText.copyWith(
+                              color: AppColors.muted,
+                            ),
+                          ),
+                          GestureDetector(
+                            onTap: widget.onSwitchToRegister,
+                            child: Text(
+                              'Sign up',
+                              style: TextStyle(
+                                color: AppColors.primaryColor,
+                                fontWeight: FontWeight.w700,
+                                fontSize: 15,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
                 ),
-                SizedBox(height: MediaQuery.of(context).size.height * 0.08),
-                // Email Field
-                TextField(
-                  controller: _emailController,
-                  style: AppTextStyles.bodyText,
-                  decoration: InputDecoration(
-                    hintText: 'Email',
-                    hintStyle: AppTextStyles.caption,
-                    prefixIcon: const Icon(
-                      Icons.email_outlined,
-                      color: AppColors.accentTeal,
-                    ),
-                    filled: true,
-                    fillColor: AppColors.secondaryBg,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(
-                        AppBorderRadius.normal,
-                      ),
-                      borderSide: BorderSide.none,
-                    ),
-                  ),
-                  keyboardType: TextInputType.emailAddress,
-                ),
-                const SizedBox(height: AppSpacing.normal),
-                // Password Field
-                TextField(
-                  controller: _passwordController,
-                  style: AppTextStyles.bodyText,
-                  obscureText: _obscurePassword,
-                  decoration: InputDecoration(
-                    hintText: 'Password',
-                    hintStyle: AppTextStyles.caption,
-                    prefixIcon: const Icon(
-                      Icons.lock_outlined,
-                      color: AppColors.accentTeal,
-                    ),
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _obscurePassword
-                            ? Icons.visibility_off
-                            : Icons.visibility,
-                        color: AppColors.accentTeal,
-                      ),
-                      onPressed: () {
-                        setState(() {
-                          _obscurePassword = !_obscurePassword;
-                        });
-                      },
-                    ),
-                    filled: true,
-                    fillColor: AppColors.secondaryBg,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(
-                        AppBorderRadius.normal,
-                      ),
-                      borderSide: BorderSide.none,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: AppSpacing.normal),
-                // Error Message
-                if (_errorMessage != null)
-                  Container(
-                    padding: const EdgeInsets.all(AppSpacing.normal),
-                    decoration: BoxDecoration(
-                      color: AppColors.errorRed.withOpacity(0.15),
-                      borderRadius: BorderRadius.circular(
-                        AppBorderRadius.small,
-                      ),
-                      border: Border.all(
-                        color: AppColors.errorRed.withOpacity(0.3),
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.error_outline,
-                          color: AppColors.errorRed,
-                          size: 18,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            _errorMessage!,
-                            style: AppTextStyles.caption.copyWith(
-                              color: AppColors.errorRed,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                const SizedBox(height: AppSpacing.normal),
-                // Login Button
-                ElevatedButton(
-                  onPressed: _isLoading ? null : _handleLogin,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primaryColor,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(
-                        AppBorderRadius.normal,
-                      ),
-                    ),
-                  ),
-                  child: _isLoading
-                      ? const SizedBox(
-                          height: 20,
-                          width: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              Colors.white,
-                            ),
-                          ),
-                        )
-                      : const Text(
-                          'Login',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                ),
-                const SizedBox(height: AppSpacing.normal),
-                // Switch to Register
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      "Don't have an account? ",
-                      style: AppTextStyles.bodyText,
-                    ),
-                    GestureDetector(
-                      onTap: widget.onSwitchToRegister,
-                      child: const Text(
-                        'Sign Up',
-                        style: TextStyle(
-                          color: AppColors.accentTeal,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),

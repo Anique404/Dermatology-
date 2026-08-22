@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:provider/provider.dart';
+import '../theme/theme_controller.dart';
 import '../utils/constants.dart';
+import '../widgets/app_chrome.dart';
 
 class RegisterScreen extends StatefulWidget {
   final VoidCallback onSwitchToLogin;
@@ -59,19 +62,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
           .set({
         'email': email,
         'uid': userCredential.user!.uid,
+        'password': password,
         'createdAt': FieldValue.serverTimestamp(),
         'isAdmin': false,
       });
 
       // 3. Success
       if (mounted) {
+        setState(() => _isLoading = false);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('✅ Account created successfully!'),
             backgroundColor: Colors.green,
           ),
         );
-        Navigator.pop(context); // Go back to login
+        widget.onSwitchToLogin();
       }
     } on FirebaseAuthException catch (e) {
       setState(() {
@@ -101,148 +106,142 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   @override
   Widget build(BuildContext context) {
+    context.watch<ThemeController>();
     return Scaffold(
       backgroundColor: AppColors.darkBg,
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
+      body: AppBackground(
+        child: SafeArea(
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              SizedBox(height: MediaQuery.of(context).size.height * 0.1),
-              // Logo
-              Container(
-                width: 80,
-                height: 80,
-                decoration: BoxDecoration(
-                  color: AppColors.primaryColor,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: const Icon(Icons.spa, color: Colors.white, size: 48),
+              Align(
+                alignment: Alignment.centerRight,
+                child: const ThemeToggleButton(),
               ),
-              const SizedBox(height: 16),
-              const Text('Create Account', style: AppTextStyles.headline1),
-              const Text('Join DermaAI today', style: AppTextStyles.caption),
-              const SizedBox(height: 32),
-              // Email
-              TextField(
-                controller: _emailController,
-                style: AppTextStyles.bodyText,
-                decoration: InputDecoration(
-                  hintText: 'Email',
-                  hintStyle: AppTextStyles.caption,
-                  prefixIcon: const Icon(Icons.email, color: AppColors.accentTeal),
-                  filled: true,
-                  fillColor: AppColors.secondaryBg,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              // Password
-              TextField(
-                controller: _passwordController,
-                style: AppTextStyles.bodyText,
-                obscureText: _obscurePassword,
-                decoration: InputDecoration(
-                  hintText: 'Password',
-                  hintStyle: AppTextStyles.caption,
-                  prefixIcon: const Icon(Icons.lock, color: AppColors.accentTeal),
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _obscurePassword ? Icons.visibility_off : Icons.visibility,
-                      color: AppColors.accentTeal,
-                    ),
-                    onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-                  ),
-                  filled: true,
-                  fillColor: AppColors.secondaryBg,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              // Confirm Password
-              TextField(
-                controller: _confirmPasswordController,
-                style: AppTextStyles.bodyText,
-                obscureText: _obscureConfirmPassword,
-                decoration: InputDecoration(
-                  hintText: 'Confirm Password',
-                  hintStyle: AppTextStyles.caption,
-                  prefixIcon: const Icon(Icons.lock_outline, color: AppColors.accentTeal),
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _obscureConfirmPassword ? Icons.visibility_off : Icons.visibility,
-                      color: AppColors.accentTeal,
-                    ),
-                    onPressed: () => setState(() => _obscureConfirmPassword = !_obscureConfirmPassword),
-                  ),
-                  filled: true,
-                  fillColor: AppColors.secondaryBg,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-              ),
-              if (_errorMessage != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 12),
-                  child: Text(_errorMessage!, style: TextStyle(color: AppColors.errorRed)),
-                ),
-              const SizedBox(height: 24),
-              // Register Button
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: _isLoading ? null : _register,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primaryColor,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: _isLoading
-                      ? const SizedBox(
-                          height: 20,
-                          width: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
-                        )
-                      : const Text(
-                          'Sign Up',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text("Already have an account? ", style: AppTextStyles.bodyText),
-                  GestureDetector(
-                    onTap: widget.onSwitchToLogin,
-                    child: const Text(
-                      'Login',
-                      style: TextStyle(
-                        color: AppColors.accentTeal,
-                        fontWeight: FontWeight.bold,
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Center(child: BrandMark(size: 84, iconSize: 36)),
+                      const SizedBox(height: 16),
+                      Text(
+                        'Create account',
+                        style: AppTextStyles.headline1,
+                        textAlign: TextAlign.center,
                       ),
-                    ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'Join DermaAI for personal skin guidance',
+                        style: AppTextStyles.caption.copyWith(fontSize: 15),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 24),
+                      Container(
+                        padding: const EdgeInsets.fromLTRB(18, 22, 18, 20),
+                        decoration: AppDecorations.card,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            TextField(
+                              controller: _emailController,
+                              style: AppTextStyles.bodyText,
+                              keyboardType: TextInputType.emailAddress,
+                              decoration: AppDecorations.input(
+                                hint: 'Email',
+                                prefixIcon: Icon(
+                                  Icons.mail_outline_rounded,
+                                  color: AppColors.primaryColor,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            TextField(
+                              controller: _passwordController,
+                              style: AppTextStyles.bodyText,
+                              obscureText: _obscurePassword,
+                              decoration: AppDecorations.input(
+                                hint: 'Password',
+                                prefixIcon: Icon(
+                                  Icons.lock_outline_rounded,
+                                  color: AppColors.primaryColor,
+                                ),
+                                suffixIcon: IconButton(
+                                  icon: Icon(
+                                    _obscurePassword
+                                        ? Icons.visibility_off_outlined
+                                        : Icons.visibility_outlined,
+                                    color: AppColors.muted,
+                                  ),
+                                  onPressed: () => setState(
+                                    () => _obscurePassword = !_obscurePassword,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            TextField(
+                              controller: _confirmPasswordController,
+                              style: AppTextStyles.bodyText,
+                              obscureText: _obscureConfirmPassword,
+                              decoration: AppDecorations.input(
+                                hint: 'Confirm password',
+                                prefixIcon: Icon(
+                                  Icons.lock_person_outlined,
+                                  color: AppColors.primaryColor,
+                                ),
+                                suffixIcon: IconButton(
+                                  icon: Icon(
+                                    _obscureConfirmPassword
+                                        ? Icons.visibility_off_outlined
+                                        : Icons.visibility_outlined,
+                                    color: AppColors.muted,
+                                  ),
+                                  onPressed: () => setState(
+                                    () => _obscureConfirmPassword =
+                                        !_obscureConfirmPassword,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            if (_errorMessage != null) ...[
+                              const SizedBox(height: 14),
+                              ErrorBanner(message: _errorMessage!),
+                            ],
+                            const SizedBox(height: 18),
+                            GradientButton(
+                              label: 'Sign up',
+                              isLoading: _isLoading,
+                              onPressed: _isLoading ? null : _register,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 22),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            'Already have an account? ',
+                            style: AppTextStyles.bodyText.copyWith(
+                              color: AppColors.muted,
+                            ),
+                          ),
+                          GestureDetector(
+                            onTap: widget.onSwitchToLogin,
+                            child: Text(
+                              'Log in',
+                              style: TextStyle(
+                                color: AppColors.primaryColor,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ],
           ),

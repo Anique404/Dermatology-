@@ -35,6 +35,7 @@ flutter:
   uses-material-design: true
 
   assets:
+    - assets/logo.png
     - assets/skin_care_model_densenet121.tflite
     - assets/class_names_densenet121.json
     - assets/recommendations.json

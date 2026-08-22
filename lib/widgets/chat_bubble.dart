@@ -1,12 +1,11 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
 import '../models/chat_model.dart';
+import '../theme/theme_controller.dart';
 import '../utils/constants.dart';
 
-// ============================================
-// CHAT BUBBLE WIDGET
-// ============================================
 class ChatBubble extends StatelessWidget {
   final MessageModel message;
   final bool isCurrentUser;
@@ -19,24 +18,32 @@ class ChatBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    context.watch<ThemeController>();
     return Align(
       alignment: isCurrentUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Padding(
-        padding: const EdgeInsets.symmetric(
-          vertical: AppSpacing.small,
-          horizontal: AppSpacing.normal,
-        ),
+        padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 16),
         child: Column(
           crossAxisAlignment: isCurrentUser
               ? CrossAxisAlignment.end
               : CrossAxisAlignment.start,
           children: [
-            // Image preview if exists
+            if (!isCurrentUser)
+              Padding(
+                padding: const EdgeInsets.only(left: 4, bottom: 6),
+                child: Text(
+                  'DermaAI',
+                  style: AppTextStyles.caption.copyWith(
+                    fontWeight: FontWeight.w500,
+                    letterSpacing: 0.2,
+                  ),
+                ),
+              ),
             if (message.imagePath != null && message.imagePath!.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.only(bottom: AppSpacing.small),
+                padding: const EdgeInsets.only(bottom: 8),
                 child: ClipRRect(
-                  borderRadius: BorderRadius.circular(AppBorderRadius.normal),
+                  borderRadius: BorderRadius.circular(16),
                   child: Image.file(
                     File(message.imagePath!),
                     width: 200,
@@ -45,22 +52,20 @@ class ChatBubble extends StatelessWidget {
                   ),
                 ),
               ),
-            // Message bubble
             Container(
               constraints: BoxConstraints(
-                maxWidth: MediaQuery.of(context).size.width * 0.75,
+                maxWidth: MediaQuery.of(context).size.width * 0.78,
               ),
-              padding: const EdgeInsets.all(AppSpacing.normal),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
               decoration: BoxDecoration(
-                color: isCurrentUser
-                    ? AppColors.primaryColor
-                    : AppColors.secondaryBg,
-                borderRadius: BorderRadius.circular(AppBorderRadius.normal),
+                color: isCurrentUser ? AppColors.userBubble : AppColors.aiBubble,
+                borderRadius: BorderRadius.circular(18),
+                border: isCurrentUser
+                    ? null
+                    : Border.all(color: AppColors.border, width: 1.4),
               ),
               child: Column(
-                crossAxisAlignment: isCurrentUser
-                    ? CrossAxisAlignment.end
-                    : CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     message.content,
@@ -68,38 +73,38 @@ class ChatBubble extends StatelessWidget {
                       color: isCurrentUser ? Colors.white : AppColors.textLight,
                     ),
                   ),
-                  // Prediction if exists
                   if (message.prediction != null)
                     Padding(
-                      padding: const EdgeInsets.only(top: AppSpacing.normal),
+                      padding: const EdgeInsets.only(top: 10),
                       child: Container(
-                        padding: const EdgeInsets.all(AppSpacing.small),
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.3),
-                          borderRadius: BorderRadius.circular(
-                            AppBorderRadius.small,
-                          ),
+                          color: isCurrentUser
+                              ? Colors.white.withValues(alpha: 0.08)
+                              : AppColors.surface,
+                          borderRadius: BorderRadius.circular(12),
                         ),
                         child: Column(
-                          crossAxisAlignment: isCurrentUser
-                              ? CrossAxisAlignment.end
-                              : CrossAxisAlignment.start,
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Disease: ${message.prediction!.diseaseName}',
+                              message.prediction!.diseaseName,
                               style: AppTextStyles.caption.copyWith(
                                 color: isCurrentUser
                                     ? Colors.white
-                                    : AppColors.accentTeal,
-                                fontWeight: FontWeight.bold,
+                                    : AppColors.primaryColor,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 13,
                               ),
                             ),
+                            const SizedBox(height: 4),
                             Text(
-                              'Confidence: ${(message.prediction!.confidence * 100).toStringAsFixed(2)}%',
+                              '${(message.prediction!.confidence * 100).toStringAsFixed(1)}% confidence',
                               style: AppTextStyles.caption.copyWith(
                                 color: isCurrentUser
                                     ? Colors.white70
-                                    : AppColors.textLight,
+                                    : AppColors.muted,
                               ),
                             ),
                           ],
@@ -109,12 +114,11 @@ class ChatBubble extends StatelessWidget {
                 ],
               ),
             ),
-            // Timestamp
             Padding(
-              padding: const EdgeInsets.only(top: AppSpacing.small),
+              padding: const EdgeInsets.only(top: 5, left: 4, right: 4),
               child: Text(
                 DateFormat('HH:mm').format(message.timestamp),
-                style: AppTextStyles.caption,
+                style: AppTextStyles.caption.copyWith(fontSize: 11),
               ),
             ),
           ],
@@ -124,9 +128,6 @@ class ChatBubble extends StatelessWidget {
   }
 }
 
-// ============================================
-// TYPING INDICATOR WIDGET
-// ============================================
 class TypingIndicator extends StatefulWidget {
   const TypingIndicator({Key? key}) : super(key: key);
 
@@ -177,10 +178,10 @@ class _TypingIndicatorState extends State<TypingIndicator>
             ).animate(_controllers[index]),
             child: Container(
               margin: const EdgeInsets.symmetric(horizontal: 4),
-              width: 8,
-              height: 8,
+              width: 7,
+              height: 7,
               decoration: BoxDecoration(
-                color: AppColors.accentTeal,
+                color: AppColors.muted,
                 shape: BoxShape.circle,
               ),
             ),

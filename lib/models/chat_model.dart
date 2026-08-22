@@ -1,5 +1,17 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+DateTime _parseDate(dynamic value) {
+  if (value is Timestamp) return value.toDate();
+  if (value is DateTime) return value;
+  return DateTime.now();
+}
+
+Map<String, dynamic> _asStringMap(dynamic value) {
+  if (value is Map<String, dynamic>) return value;
+  if (value is Map) return Map<String, dynamic>.from(value);
+  return <String, dynamic>{};
+}
+
 // ============================================
 // USER MODEL
 // ============================================
@@ -33,7 +45,7 @@ class UserModel {
       uid: map['uid'] ?? '',
       email: map['email'] ?? '',
       displayName: map['displayName'],
-      createdAt: (map['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      createdAt: _parseDate(map['createdAt']),
       isAdmin: map['isAdmin'] ?? false,
     );
   }
@@ -93,11 +105,11 @@ class ChatModel {
       title: map['title'] ?? 'Chat',
       messages:
           (map['messages'] as List<dynamic>?)
-              ?.map((m) => MessageModel.fromMap(m as Map<String, dynamic>))
+              ?.map((m) => MessageModel.fromMap(_asStringMap(m)))
               .toList() ??
           [],
-      createdAt: (map['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
-      updatedAt: (map['updatedAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      createdAt: _parseDate(map['createdAt']),
+      updatedAt: _parseDate(map['updatedAt']),
     );
   }
 
@@ -156,10 +168,10 @@ class MessageModel {
       id: map['id'] ?? '',
       content: map['content'] ?? '',
       sender: map['sender'] ?? 'user',
-      timestamp: (map['timestamp'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      timestamp: _parseDate(map['timestamp']),
       imagePath: map['imagePath'],
       prediction: map['prediction'] != null
-          ? PredictionModel.fromMap(map['prediction'] as Map<String, dynamic>)
+          ? PredictionModel.fromMap(_asStringMap(map['prediction']))
           : null,
     );
   }

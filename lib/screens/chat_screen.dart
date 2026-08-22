@@ -8,6 +8,9 @@ import '../services/model_service.dart';
 import '../utils/constants.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/side_menu.dart';
+import '../widgets/app_chrome.dart';
+import '../theme/theme_controller.dart';
+import 'package:provider/provider.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({Key? key}) : super(key: key);
@@ -28,6 +31,7 @@ class _ChatScreenState extends State<ChatScreen> {
   List<MessageModel> _currentMessages = [];
   bool _isProcessing = false;
   bool _isModelReady = false;
+  bool _titleHasBeenSet = false;
 
   @override
   void initState() {
@@ -48,34 +52,122 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _createNewChat() async {
+    if (!mounted) return;
+
+    _messageController.clear();
+    setState(() {
+      _currentChatId = null;
+      _currentMessages = [];
+      _isProcessing = false;
+      _titleHasBeenSet = false;
+    });
+
     try {
       final userId = _authService.currentUser!.uid;
       final chatId = await _firestoreService.createChat(userId, 'New Chat');
-      setState(() {
-        _currentChatId = chatId;
-        _currentMessages = [];
-      });
-      _addWelcomeMessage();
+      await _firestoreService.ensureUserDocumentExists(
+        userId,
+        email: _authService.currentUser?.email,
+      );
+      if (!mounted) return;
+      setState(() => _currentChatId = chatId);
     } catch (e) {
       print('❌ Create chat error: $e');
     }
   }
 
-  void _addWelcomeMessage() {
-    setState(() {
-      _currentMessages.add(
-        MessageModel(
-          id: 'welcome_${DateTime.now().millisecondsSinceEpoch}',
-          content:
-              '👋 Hello! I\'m DermaAI.\n\n'
-              '📸 Upload an image to analyze your skin condition.\n'
-              '📋 Select a disease from the list.\n'
-              '💬 Describe your symptoms.',
-          sender: 'ai',
-          timestamp: DateTime.now(),
-        ),
+  bool get _hasUserMessages =>
+      _currentMessages.any((message) => message.sender == 'user');
+
+  String _titleFromText(String text) {
+    final trimmed = text.trim();
+    if (trimmed.length <= 30) return trimmed;
+    return '${trimmed.substring(0, 30)}...';
+  }
+
+  Future<void> _maybeUpdateChatTitle(String title) async {
+    if (_titleHasBeenSet || _currentChatId == null) return;
+    _titleHasBeenSet = true;
+    try {
+      await _firestoreService.updateChatTitle(
+        _authService.currentUser!.uid,
+        _currentChatId!,
+        title,
       );
+    } catch (e) {
+      print('❌ Failed to update chat title: $e');
+      _titleHasBeenSet = false;
+    }
+  }
+
+  Future<void> _persistMessage(MessageModel message) async {
+    if (_currentChatId == null) return;
+    try {
+      await _firestoreService.addMessageToChat(
+        _authService.currentUser!.uid,
+        _currentChatId!,
+        message,
+      );
+    } catch (e) {
+      print('❌ Persist message error: $e');
+    }
+  }
+
+  Future<void> _savePrediction(PredictionModel prediction) async {
+    if (_currentChatId == null) return;
+    try {
+      await _firestoreService.savePrediction(
+        userId: _authService.currentUser!.uid,
+        chatId: _currentChatId!,
+        diseaseName: prediction.diseaseName,
+        confidence: prediction.confidence,
+        recommendation: prediction.recommendation,
+      );
+    } catch (e) {
+      print('❌ Save prediction error: $e');
+    }
+  }
+
+  Future<void> _selectChat(String chatId) async {
+    if (!mounted) return;
+
+    _messageController.clear();
+    setState(() {
+      _currentChatId = chatId;
+      _currentMessages = [];
+      _isProcessing = false;
+      _titleHasBeenSet = false;
     });
+
+    try {
+      final messages = await _firestoreService.getChatMessages(
+        _authService.currentUser!.uid,
+        chatId,
+      );
+      final chat = await _firestoreService.getChat(
+        _authService.currentUser!.uid,
+        chatId,
+      );
+      if (!mounted) return;
+
+      final loaded = messages
+          .where((message) => !message.id.startsWith('welcome_'))
+          .toList();
+
+      setState(() {
+        _currentChatId = chatId;
+        _currentMessages = loaded;
+        _titleHasBeenSet = chat != null &&
+            chat.title.isNotEmpty &&
+            chat.title != 'New Chat';
+      });
+
+      if (_currentMessages.isNotEmpty) {
+        _scrollToBottom();
+      }
+    } catch (e) {
+      print('❌ Load chat error: $e');
+    }
   }
 
   // ============================================
@@ -124,6 +216,8 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() => _isProcessing = true);
 
     try {
+      final isFirstUserMessage = !_hasUserMessages;
+
       // Add user message with image
       final userMessage = MessageModel(
         id: 'user_img_${DateTime.now().millisecondsSinceEpoch}',
@@ -133,6 +227,11 @@ class _ChatScreenState extends State<ChatScreen> {
         imagePath: imageFile.path,
       );
       setState(() => _currentMessages.add(userMessage));
+      await _persistMessage(userMessage);
+
+      if (isFirstUserMessage) {
+        await _maybeUpdateChatTitle('📸 Image uploaded');
+      }
 
       // Read image bytes
       final bytes = await imageFile.readAsBytes();
@@ -141,9 +240,14 @@ class _ChatScreenState extends State<ChatScreen> {
       final result = await _modelService.predictDisease(bytes);
 
       final diseaseName = result['diseaseName'] ?? 'Unknown';
-      final confidence = result['confidence'] ?? 0.0;
+      final confidence = (result['confidence'] as num?)?.toDouble() ?? 0.0;
       final recommendation =
           result['recommendation'] ?? 'Consult a dermatologist.';
+      final prediction = PredictionModel(
+        diseaseName: diseaseName,
+        confidence: confidence,
+        recommendation: recommendation,
+      );
 
       // Add AI response
       final aiMessage = MessageModel(
@@ -154,8 +258,11 @@ class _ChatScreenState extends State<ChatScreen> {
             '💊 Recommendation:\n$recommendation',
         sender: 'ai',
         timestamp: DateTime.now(),
+        prediction: prediction,
       );
       setState(() => _currentMessages.add(aiMessage));
+      await _persistMessage(aiMessage);
+      await _savePrediction(prediction);
 
       _scrollToBottom();
     } catch (e) {
@@ -173,26 +280,35 @@ class _ChatScreenState extends State<ChatScreen> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      backgroundColor: AppColors.secondaryBg,
+      barrierColor: Colors.black.withValues(alpha: 0.35),
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
       ),
       builder: (context) => Container(
         height: MediaQuery.of(context).size.height * 0.7,
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
         child: Column(
           children: [
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey[400],
-                borderRadius: BorderRadius.circular(2),
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceHigh,
+                  borderRadius: BorderRadius.circular(99),
+                ),
               ),
             ),
-            const SizedBox(height: 16),
-            const Text(
-              'Common Skin Diseases',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            const SizedBox(height: 20),
+            Text(
+              'Skin conditions',
+              style: AppTextStyles.headline2,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Choose one to see a recommendation',
+              style: AppTextStyles.caption,
             ),
             const SizedBox(height: 16),
             Expanded(
@@ -200,33 +316,72 @@ class _ChatScreenState extends State<ChatScreen> {
                 itemCount: DiseaseList.diseases.length,
                 itemBuilder: (context, index) {
                   final disease = DiseaseList.diseases[index];
-                  return ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: Colors.teal.withOpacity(0.1),
-                      child: const Icon(
-                        Icons.medical_services,
-                        color: Colors.teal,
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Material(
+                      color: AppColors.surface,
+                      borderRadius: BorderRadius.circular(16),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: () {
+                          Navigator.pop(context);
+                          _handleDiseaseSelected(disease);
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 12,
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 40,
+                                height: 40,
+                                decoration: BoxDecoration(
+                                  color: AppColors.primaryColor.withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Icon(
+                                  Icons.spa_outlined,
+                                  color: AppColors.primaryColor,
+                                  size: 18,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  disease,
+                                  style: AppTextStyles.subtitle1,
+                                ),
+                              ),
+                              Icon(
+                                Icons.chevron_right_rounded,
+                                color: AppColors.muted,
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
                     ),
-                    title: Text(disease),
-                    trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _handleDiseaseSelected(disease);
-                    },
                   );
                 },
               ),
             ),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(context),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.teal,
-                foregroundColor: Colors.white,
-                minimumSize: const Size(double.infinity, 50),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              height: 50,
+              child: OutlinedButton(
+                onPressed: () => Navigator.pop(context),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.textLight,
+                  side: BorderSide(color: AppColors.border),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+                child: Text('Close'),
               ),
-              child: const Text('Close'),
             ),
           ],
         ),
@@ -234,7 +389,9 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  void _handleDiseaseSelected(String disease) {
+  Future<void> _handleDiseaseSelected(String disease) async {
+    final isFirstUserMessage = !_hasUserMessages;
+
     // User message
     final userMessage = MessageModel(
       id: 'user_${DateTime.now().millisecondsSinceEpoch}',
@@ -243,11 +400,21 @@ class _ChatScreenState extends State<ChatScreen> {
       timestamp: DateTime.now(),
     );
     setState(() => _currentMessages.add(userMessage));
+    await _persistMessage(userMessage);
+
+    if (isFirstUserMessage) {
+      await _maybeUpdateChatTitle('📋 $disease');
+    }
 
     // Get recommendation
     final info = _modelService.getDiseaseInfo(disease);
     final recommendation =
         info?['recommendation'] ?? 'Consult a dermatologist.';
+    final prediction = PredictionModel(
+      diseaseName: disease,
+      confidence: 1.0,
+      recommendation: recommendation,
+    );
 
     // AI message
     final aiMessage = MessageModel(
@@ -255,8 +422,11 @@ class _ChatScreenState extends State<ChatScreen> {
       content: '🔍 $disease\n\n💊 Recommendation:\n$recommendation',
       sender: 'ai',
       timestamp: DateTime.now(),
+      prediction: prediction,
     );
     setState(() => _currentMessages.add(aiMessage));
+    await _persistMessage(aiMessage);
+    await _savePrediction(prediction);
 
     _scrollToBottom();
   }
@@ -268,8 +438,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final text = _messageController.text.trim();
     if (text.isEmpty) return;
 
-    // Check if this is the first message (chat is empty)
-    final bool isFirstMessage = _currentMessages.isEmpty;
+    final bool isFirstUserMessage = !_hasUserMessages;
 
     // Create user message
     final userMessage = MessageModel(
@@ -281,24 +450,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
     setState(() => _currentMessages.add(userMessage));
     _messageController.clear();
+    await _persistMessage(userMessage);
 
-    // If this is the first message, update chat title
-    if (isFirstMessage) {
-      try {
-        // Create title from first message (max 30 chars)
-        String title = text;
-        if (title.length > 30) {
-          title = title.substring(0, 30) + '...';
-        }
-
-        await _firestoreService.updateChatTitle(
-          _authService.currentUser!.uid,
-          _currentChatId!,
-          title,
-        );
-      } catch (e) {
-        print('❌ Failed to update chat title: $e');
-      }
+    if (isFirstUserMessage) {
+      await _maybeUpdateChatTitle(_titleFromText(text));
     }
 
     // Simple AI response
@@ -312,6 +467,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
 
     setState(() => _currentMessages.add(aiMessage));
+    await _persistMessage(aiMessage);
     _scrollToBottom();
   }
 
@@ -331,9 +487,20 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _showSnackbar(String message) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  Widget _composerIcon({
+    required IconData icon,
+    required VoidCallback? onPressed,
+  }) {
+    return IconButton(
+      onPressed: onPressed,
+      visualDensity: VisualDensity.compact,
+      icon: Icon(icon, size: 22, color: AppColors.textLight),
+    );
   }
 
   // ============================================
@@ -341,32 +508,32 @@ class _ChatScreenState extends State<ChatScreen> {
   // ============================================
   @override
   Widget build(BuildContext context) {
+    context.watch<ThemeController>();
+    final bottomInset = MediaQuery.of(context).padding.bottom;
     return Scaffold(
+      backgroundColor: AppColors.darkBg,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF1A1A1A),
-        foregroundColor: Colors.white,
+        backgroundColor: AppColors.secondaryBg,
+        foregroundColor: AppColors.textLight,
         elevation: 0,
+        centerTitle: false,
         title: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            // Logo
-            Container(
-              padding: const EdgeInsets.all(4),
-              decoration: BoxDecoration(
-                color: Colors.teal,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: const Icon(Icons.spa, color: Colors.white, size: 20),
-            ),
+            const BrandMini(),
             const SizedBox(width: 10),
-            const Text(
+            Text(
               'DermaAI',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20),
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                fontSize: 18,
+                letterSpacing: -0.3,
+                color: AppColors.textLight,
+              ),
             ),
           ],
         ),
-        // SIRF RIGHT SIDE MARGIN 80
-        actions: const [SizedBox(width: 80)], // <-- SIRF RIGHT SIDE
+        actions: const [ThemeToggleButton()],
       ),
       drawer: StreamBuilder<List<ChatModel>>(
         stream: _firestoreService.getUserChats(_authService.currentUser!.uid),
@@ -376,9 +543,7 @@ class _ChatScreenState extends State<ChatScreen> {
             chats: chats,
             currentChatId: _currentChatId ?? '',
             onNewChat: _createNewChat,
-            onSelectChat: (chatId) {
-              setState(() => _currentChatId = chatId);
-            },
+            onSelectChat: _selectChat,
             onDeleteChat: (chatId) async {
               await _firestoreService.deleteChat(
                 _authService.currentUser!.uid,
@@ -388,7 +553,14 @@ class _ChatScreenState extends State<ChatScreen> {
                 _createNewChat();
               }
             },
-            onLogout: () => _authService.logout(),
+            onLogout: () async {
+              await _authService.logout();
+              if (!mounted) return;
+              Navigator.of(context).pushNamedAndRemoveUntil(
+                '/login',
+                (route) => false,
+              );
+            },
             onProfile: () {
               ScaffoldMessenger.of(
                 context,
@@ -399,28 +571,35 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: Column(
         children: [
-          // Messages
           Expanded(
             child: _currentMessages.isEmpty
                 ? Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.chat_bubble_outline,
-                          size: 64,
-                          color: Colors.teal.withOpacity(0.5),
-                        ),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'Start chatting with DermaAI...',
-                          style: TextStyle(color: Colors.teal, fontSize: 16),
-                        ),
-                      ],
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 40),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const BrandMark(size: 72, iconSize: 32),
+                          const SizedBox(height: 20),
+                          Text(
+                            'How can I help today?',
+                            textAlign: TextAlign.center,
+                            style: AppTextStyles.headline2,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Send a photo or ask about a skin condition.',
+                            textAlign: TextAlign.center,
+                            style: AppTextStyles.caption.copyWith(fontSize: 14),
+                          ),
+                        ],
+                      ),
                     ),
                   )
                 : ListView.builder(
+                    key: ValueKey(_currentChatId),
                     controller: _scrollController,
+                    padding: const EdgeInsets.only(top: 8, bottom: 12),
                     itemCount: _currentMessages.length,
                     itemBuilder: (context, index) {
                       final message = _currentMessages[index];
@@ -431,122 +610,93 @@ class _ChatScreenState extends State<ChatScreen> {
                     },
                   ),
           ),
-
-          // Processing indicator
           if (_isProcessing)
-            const Padding(
-              padding: EdgeInsets.all(8),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.8,
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        AppColors.primaryColor,
+                      ),
+                    ),
                   ),
-                  SizedBox(width: 8),
-                  Text('Analyzing...'),
+                  const SizedBox(width: 10),
+                  Text(
+                    'Analyzing…',
+                    style: AppTextStyles.caption.copyWith(
+                      color: AppColors.primaryColor,
+                    ),
+                  ),
                 ],
               ),
             ),
-
-          // Input area
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1A1A1A),
-              border: Border(top: BorderSide(color: Colors.grey[800]!)),
-            ),
-            child: Column(
-              children: [
-                // Buttons row
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    ElevatedButton.icon(
-                      onPressed: _isProcessing ? null : _pickImageFromGallery,
-                      icon: const Icon(Icons.image, size: 18),
-                      label: const Text('Gallery'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.teal,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 8,
-                        ),
-                        textStyle: const TextStyle(fontSize: 12),
-                      ),
+          Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 12 + bottomInset),
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(6, 6, 6, 6),
+              decoration: BoxDecoration(
+                color: AppColors.secondaryBg,
+                borderRadius: BorderRadius.circular(22),
+                border: Border.all(color: AppColors.border, width: 1.5),
+              ),
+              child: Column(
+                children: [
+                  TextField(
+                    controller: _messageController,
+                    style: AppTextStyles.bodyText,
+                    minLines: 1,
+                    maxLines: 4,
+                    decoration: InputDecoration(
+                      hintText: 'Message DermaAI',
+                      hintStyle: TextStyle(color: AppColors.muted),
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      contentPadding: EdgeInsets.fromLTRB(14, 10, 14, 6),
                     ),
-                    ElevatedButton.icon(
-                      onPressed: _showDiseaseList,
-                      icon: const Icon(Icons.list, size: 18),
-                      label: const Text('Diseases'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.teal,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 8,
-                        ),
-                        textStyle: const TextStyle(fontSize: 12),
+                    onSubmitted: (_) => _sendTextMessage(),
+                  ),
+                  Row(
+                    children: [
+                      _composerIcon(
+                        icon: Icons.photo_outlined,
+                        onPressed: _isProcessing ? null : _pickImageFromGallery,
                       ),
-                    ),
-                    ElevatedButton.icon(
-                      onPressed: _isProcessing ? null : _pickImageFromCamera,
-                      icon: const Icon(Icons.camera_alt, size: 18),
-                      label: const Text('Camera'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.teal,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 8,
-                        ),
-                        textStyle: const TextStyle(fontSize: 12),
+                      _composerIcon(
+                        icon: Icons.menu_outlined,
+                        onPressed: _showDiseaseList,
                       ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                // Text input row
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _messageController,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: InputDecoration(
-                          hintText: 'Type your message...',
-                          hintStyle: TextStyle(color: Colors.grey[500]),
-                          filled: true,
-                          fillColor: const Color(0xFF2D2D2D),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(24),
-                            borderSide: BorderSide.none,
-                          ),
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 10,
-                          ),
-                        ),
-                        onSubmitted: (_) => _sendTextMessage(),
+                      _composerIcon(
+                        icon: Icons.photo_camera_outlined,
+                        onPressed: _isProcessing ? null : _pickImageFromCamera,
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    CircleAvatar(
-                      backgroundColor: Colors.teal,
-                      child: IconButton(
-                        icon: const Icon(
-                          Icons.send,
-                          color: Colors.white,
-                          size: 20,
-                        ),
+                      const Spacer(),
+                      IconButton(
                         onPressed: _isProcessing ? null : _sendTextMessage,
+                        icon: Container(
+                          width: 34,
+                          height: 34,
+                          decoration: BoxDecoration(
+                            color: AppColors.primaryColor,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            Icons.arrow_upward_rounded,
+                            color: Colors.white,
+                            size: 18,
+                          ),
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-              ],
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
         ],

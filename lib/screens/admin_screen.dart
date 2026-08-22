@@ -1,9 +1,14 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
 import '../services/firestore_service.dart';
+import '../theme/theme_controller.dart';
 import '../utils/constants.dart';
-import '../screens/login_screen.dart';
+import '../widgets/app_chrome.dart';
+import 'admin_history_screen.dart';
 
 // ============================================
 // ADMIN SCREEN (UC6)
@@ -21,22 +26,153 @@ class _AdminScreenState extends State<AdminScreen> {
   int _totalUsers = 0;
   int _totalChats = 0;
   int _totalPredictions = 0;
+  bool _statsLoading = true;
+  String? _statsError;
+  List<Map<String, dynamic>> _users = [];
+  bool _usersLoading = true;
+  String? _usersError;
+  StreamSubscription<QuerySnapshot>? _usersSub;
+  StreamSubscription<QuerySnapshot>? _chatsSub;
+  StreamSubscription<QuerySnapshot>? _predictionsSub;
 
   @override
   void initState() {
     super.initState();
-    _loadStats();
+    _ensureAuthAndStart();
+  }
+
+  @override
+  void dispose() {
+    _usersSub?.cancel();
+    _chatsSub?.cancel();
+    _predictionsSub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _ensureAuthAndStart() async {
+    await _ensureFirebaseAuth();
+    try {
+      await _firestoreService.repairMissingUserDocs();
+    } catch (e) {
+      print('❌ Repair users error: $e');
+    }
+    await _loadStats();
+    _listenForRealtimeUpdates();
+  }
+
+  Future<void> _ensureFirebaseAuth() async {
+    if (FirebaseAuth.instance.currentUser != null) return;
+    try {
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: 'admin@gmail.com',
+        password: 'admin123',
+      );
+    } catch (_) {
+      try {
+        await FirebaseAuth.instance.createUserWithEmailAndPassword(
+          email: 'admin@gmail.com',
+          password: 'admin123',
+        );
+      } catch (_) {
+        try {
+          await FirebaseAuth.instance.signInAnonymously();
+        } catch (e) {
+          print('❌ Admin auth failed: $e');
+        }
+      }
+    }
+  }
+
+  void _listenForRealtimeUpdates() {
+    final firestore = FirebaseFirestore.instance;
+    _usersSub = firestore.collection('users').snapshots().listen((snapshot) {
+      if (!mounted) return;
+      setState(() {
+        _users = snapshot.docs.where((doc) => doc.exists).map((doc) {
+          final data = doc.data();
+          return {
+            'uid': data['uid'] ?? doc.id,
+            'email': data['email'] ?? 'Unknown',
+            'password': data['password'],
+            'createdAt': data['createdAt'],
+            'isAdmin': data['isAdmin'] ?? false,
+          };
+        }).toList();
+        _usersLoading = false;
+        _usersError = null;
+      });
+      _loadStats();
+    }, onError: (e) {
+      if (mounted) {
+        setState(() {
+          _statsError = _friendlyFirestoreError(e);
+          _statsLoading = false;
+          _usersError = _friendlyFirestoreError(e);
+          _usersLoading = false;
+        });
+      }
+    });
+    _chatsSub = firestore.collection('chats').snapshots().listen((_) {
+      _loadStats();
+    }, onError: (e) => print('❌ Chats stream error: $e'));
+    _predictionsSub =
+        firestore.collection('predictions').snapshots().listen((_) {
+      _loadStats();
+    }, onError: (e) => print('❌ Predictions stream error: $e'));
+  }
+
+  String _friendlyFirestoreError(Object e) {
+    final text = e.toString();
+    if (text.contains('PERMISSION_DENIED') ||
+        text.contains('not been used') ||
+        text.contains('disabled')) {
+      return 'Cloud Firestore is not enabled for project dermai-skin-care. Open Firebase Console → Firestore Database → Create database (test mode), wait 1–2 minutes, then pull to refresh.';
+    }
+    return 'Could not load stats: $e';
   }
 
   Future<void> _loadStats() async {
     try {
-      final users = await _firestoreService.getAllUsers();
+      final stats = await _firestoreService.getAdminStats();
+      if (!mounted) return;
       setState(() {
-        _totalUsers = users.length;
+        _totalUsers = stats['users'] ?? 0;
+        _totalChats = stats['chats'] ?? 0;
+        _totalPredictions = stats['predictions'] ?? 0;
+        _statsError = null;
+        _statsLoading = false;
       });
     } catch (e) {
       print('❌ Error loading stats: $e');
+      if (mounted) {
+        setState(() {
+          _statsError = _friendlyFirestoreError(e);
+          _statsLoading = false;
+        });
+      }
     }
+  }
+
+  String _formatDate(dynamic value) {
+    DateTime? date;
+    if (value is Timestamp) {
+      date = value.toDate();
+    } else if (value is DateTime) {
+      date = value;
+    }
+    if (date == null) return 'N/A';
+    final y = date.year.toString().padLeft(4, '0');
+    final m = date.month.toString().padLeft(2, '0');
+    final d = date.day.toString().padLeft(2, '0');
+    final h = date.hour.toString().padLeft(2, '0');
+    final min = date.minute.toString().padLeft(2, '0');
+    return '$y-$m-$d $h:$min';
+  }
+
+  String _passwordLabel(dynamic password) {
+    if (password == null) return 'Not saved';
+    final text = password.toString().trim();
+    return text.isEmpty ? 'Not saved' : text;
   }
 
   // ============================================
@@ -52,8 +188,15 @@ class _AdminScreenState extends State<AdminScreen> {
       padding: const EdgeInsets.all(AppSpacing.large),
       decoration: BoxDecoration(
         color: AppColors.secondaryBg,
-        borderRadius: BorderRadius.circular(AppBorderRadius.medium),
-        border: Border.all(color: color.withOpacity(0.3), width: 2),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withOpacity(0.28), width: 1.2),
+        boxShadow: [
+          BoxShadow(
+            color: color.withOpacity(0.08),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -61,8 +204,16 @@ class _AdminScreenState extends State<AdminScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(title, style: AppTextStyles.subtitle1),
-              Icon(icon, color: color, size: 28),
+              Expanded(child: Text(title, style: AppTextStyles.subtitle1)),
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.14),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(icon, color: color, size: 22),
+              ),
             ],
           ),
           const SizedBox(height: AppSpacing.normal),
@@ -76,37 +227,73 @@ class _AdminScreenState extends State<AdminScreen> {
   // STATISTICS TAB (Only 3 Cards)
   // ============================================
   Widget _buildStatisticsTab() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(AppSpacing.large),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // Card 1: Total Users
-          _buildStatCard(
-            title: 'Total Registered Users',
-            value: '$_totalUsers',
-            icon: Icons.people,
-            color: AppColors.primaryColor,
-          ),
-          const SizedBox(height: AppSpacing.large),
+    if (_statsLoading) {
+      return Center(
+        child: CircularProgressIndicator(
+          valueColor: AlwaysStoppedAnimation<Color>(AppColors.accentTeal),
+        ),
+      );
+    }
 
-          // Card 2: Active Chats
-          _buildStatCard(
-            title: 'Active Chats',
-            value: '$_totalChats',
-            icon: Icons.chat,
-            color: AppColors.accentTeal,
-          ),
-          const SizedBox(height: AppSpacing.large),
+    return RefreshIndicator(
+      onRefresh: _loadStats,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(AppSpacing.large),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('Overview', style: AppTextStyles.headline2),
+            const SizedBox(height: 4),
+            Text(
+              'Live snapshot of DermaAI activity',
+              style: AppTextStyles.caption.copyWith(fontSize: 13.5),
+            ),
+            const SizedBox(height: AppSpacing.large),
+            if (_statsError != null) ...[
+              Container(
+                padding: const EdgeInsets.all(AppSpacing.normal),
+                decoration: BoxDecoration(
+                  color: AppColors.errorRed.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(AppBorderRadius.normal),
+                  border: Border.all(color: AppColors.errorRed.withOpacity(0.4)),
+                ),
+                child: Text(
+                  _statsError!,
+                  style: AppTextStyles.bodyText.copyWith(
+                    color: AppColors.errorRed,
+                  ),
+                ),
+              ),
+              const SizedBox(height: AppSpacing.large),
+            ],
+            // Card 1: Total Users
+            _buildStatCard(
+              title: 'Total Registered Users',
+              value: '$_totalUsers',
+              icon: Icons.people,
+              color: AppColors.primaryColor,
+            ),
+            const SizedBox(height: AppSpacing.large),
 
-          // Card 3: Predictions
-          _buildStatCard(
-            title: 'Predictions',
-            value: '$_totalPredictions',
-            icon: Icons.analytics,
-            color: AppColors.successGreen,
-          ),
-        ],
+            // Card 2: Active Chats
+            _buildStatCard(
+              title: 'Active Chats',
+              value: '$_totalChats',
+              icon: Icons.chat,
+              color: AppColors.accentTeal,
+            ),
+            const SizedBox(height: AppSpacing.large),
+
+            // Card 3: Predictions
+            _buildStatCard(
+              title: 'Predictions',
+              value: '$_totalPredictions',
+              icon: Icons.analytics,
+              color: AppColors.successGreen,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -115,44 +302,41 @@ class _AdminScreenState extends State<AdminScreen> {
   // USERS TAB (UC6)
   // ============================================
   Widget _buildUsersTab() {
-    return FutureBuilder<List<Map<String, dynamic>>>(
-      future: _firestoreService.getAllUsers(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(
-            child: CircularProgressIndicator(
-              valueColor: AlwaysStoppedAnimation<Color>(AppColors.accentTeal),
-            ),
-          );
-        }
+    if (_usersLoading) {
+      return Center(
+        child: CircularProgressIndicator(
+          valueColor: AlwaysStoppedAnimation<Color>(AppColors.accentTeal),
+        ),
+      );
+    }
 
-        if (snapshot.hasError) {
-          return Center(
-            child: Text(
-              'Error: ${snapshot.error}',
-              style: AppTextStyles.bodyText,
-            ),
-          );
-        }
+    if (_usersError != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.large),
+          child: Text(
+            _usersError!,
+            style: AppTextStyles.bodyText,
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
 
-        final users = snapshot.data ?? [];
+    if (_users.isEmpty) {
+      return Center(
+        child: Text('No users found', style: AppTextStyles.bodyText),
+      );
+    }
 
-        if (users.isEmpty) {
-          return Center(
-            child: Text('No users found', style: AppTextStyles.bodyText),
-          );
-        }
-
-        return ListView.builder(
-          padding: const EdgeInsets.all(AppSpacing.normal),
-          itemCount: users.length,
-          itemBuilder: (context, index) {
-            final user = users[index];
-            return Padding(
-              padding: const EdgeInsets.only(bottom: AppSpacing.normal),
-              child: _buildUserCard(user),
-            );
-          },
+    return ListView.builder(
+      padding: const EdgeInsets.all(AppSpacing.normal),
+      itemCount: _users.length,
+      itemBuilder: (context, index) {
+        final user = _users[index];
+        return Padding(
+          padding: const EdgeInsets.only(bottom: AppSpacing.normal),
+          child: _buildUserCard(user),
         );
       },
     );
@@ -163,11 +347,9 @@ class _AdminScreenState extends State<AdminScreen> {
   // ============================================
   Widget _buildUserCard(Map<String, dynamic> user) {
     return Container(
-      padding: const EdgeInsets.all(AppSpacing.normal),
-      decoration: BoxDecoration(
-        color: AppColors.secondaryBg,
-        borderRadius: BorderRadius.circular(AppBorderRadius.normal),
-        border: Border.all(color: AppColors.primaryColor.withOpacity(0.3)),
+      padding: const EdgeInsets.all(16),
+      decoration: AppDecorations.card.copyWith(
+        borderRadius: BorderRadius.circular(18),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -175,13 +357,16 @@ class _AdminScreenState extends State<AdminScreen> {
           Row(
             children: [
               Container(
-                width: 40,
-                height: 40,
+                width: 48,
+                height: 48,
                 decoration: BoxDecoration(
                   color: AppColors.primaryColor,
                   shape: BoxShape.circle,
                 ),
-                child: const Icon(Icons.person, color: Colors.white),
+                child: Icon(
+                  Icons.person_rounded,
+                  color: AppColors.isDark ? const Color(0xFF042F2E) : Colors.white,
+                ),
               ),
               const SizedBox(width: AppSpacing.normal),
               Expanded(
@@ -189,11 +374,12 @@ class _AdminScreenState extends State<AdminScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '📧 ${user['email'] ?? 'Unknown'}',
+                      user['email'] ?? 'Unknown',
                       style: AppTextStyles.subtitle1,
                     ),
+                    const SizedBox(height: 4),
                     Text(
-                      'UID: ${user['uid']?.substring(0, 12)}...',
+                      'Joined ${_formatDate(user['createdAt'])}',
                       style: AppTextStyles.caption,
                     ),
                   ],
@@ -201,61 +387,49 @@ class _AdminScreenState extends State<AdminScreen> {
               ),
             ],
           ),
-          const SizedBox(height: AppSpacing.normal),
+          const SizedBox(height: 14),
           Row(
             children: [
               Expanded(
-                child: GestureDetector(
-                  onTap: () {
-                    _showUserDetailsDialog(user);
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      vertical: 8,
-                      horizontal: 12,
+                child: OutlinedButton(
+                  onPressed: () => _showUserDetailsDialog(user),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.textLight,
+                    side: BorderSide(color: AppColors.border, width: 1.4),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
                     ),
-                    decoration: BoxDecoration(
-                      color: AppColors.primaryColor.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(
-                        AppBorderRadius.small,
-                      ),
-                    ),
-                    child: const Text(
-                      'View Details',
-                      style: TextStyle(
-                        color: AppColors.accentTeal,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
+                  ),
+                  child: const Text(
+                    'Details',
+                    style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
                   ),
                 ),
               ),
               const SizedBox(width: AppSpacing.small),
               Expanded(
-                child: GestureDetector(
-                  onTap: () {
-                    _showUserChatHistory(user['uid']);
+                child: ElevatedButton(
+                  onPressed: () {
+                    _showUserChatHistory(
+                      user['uid'],
+                      email: user['email'] ?? '',
+                    );
                   },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      vertical: 8,
-                      horizontal: 12,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primaryColor,
+                    foregroundColor: AppColors.isDark
+                        ? const Color(0xFF042F2E)
+                        : Colors.white,
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
                     ),
-                    decoration: BoxDecoration(
-                      color: AppColors.accentTeal.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(
-                        AppBorderRadius.small,
-                      ),
-                    ),
-                    child: const Text(
-                      'Chat History',
-                      style: TextStyle(
-                        color: AppColors.accentTeal,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
+                  ),
+                  child: const Text(
+                    'Chat history',
+                    style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
                   ),
                 ),
               ),
@@ -274,25 +448,24 @@ class _AdminScreenState extends State<AdminScreen> {
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: AppColors.secondaryBg,
-        title: const Text('User Details', style: AppTextStyles.headline2),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        title: Text('User Details', style: AppTextStyles.headline2),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _buildDetailRow('Email', user['email'] ?? 'N/A'),
+              _buildDetailRow('Password', _passwordLabel(user['password'])),
               _buildDetailRow('UID', user['uid'] ?? 'N/A'),
-              _buildDetailRow(
-                'Created At',
-                user['createdAt']?.toString() ?? 'N/A',
-              ),
+              _buildDetailRow('Created At', _formatDate(user['createdAt'])),
             ],
           ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text(
+            child: Text(
               'Close',
               style: TextStyle(color: AppColors.accentTeal),
             ),
@@ -305,198 +478,11 @@ class _AdminScreenState extends State<AdminScreen> {
   // ============================================
   // USER CHAT HISTORY (UC6)
   // ============================================
-  void _showUserChatHistory(String uid) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.7,
-        minChildSize: 0.4,
-        maxChildSize: 0.9,
-        builder: (context, scrollController) {
-          return Container(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: Colors.grey[400],
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Text('User Chat History', style: AppTextStyles.headline2),
-                const SizedBox(height: 16),
-                Expanded(
-                  child: StreamBuilder<QuerySnapshot>(
-                    stream: FirebaseFirestore.instance
-                        .collection('users')
-                        .doc(uid)
-                        .collection('chats')
-                        .orderBy('createdAt', descending: true)
-                        .snapshots(),
-                    builder: (context, snapshot) {
-                      if (!snapshot.hasData) {
-                        return const Center(child: CircularProgressIndicator());
-                      }
-                      final chats = snapshot.data!.docs;
-                      if (chats.isEmpty) {
-                        return Center(
-                          child: Text(
-                            'No chats found',
-                            style: AppTextStyles.bodyText,
-                          ),
-                        );
-                      }
-                      return ListView.builder(
-                        controller: scrollController,
-                        itemCount: chats.length,
-                        itemBuilder: (context, index) {
-                          final data =
-                              chats[index].data() as Map<String, dynamic>;
-                          return Card(
-                            color: AppColors.secondaryBg,
-                            child: ListTile(
-                              title: Text(
-                                data['title'] ?? 'New Chat',
-                                style: AppTextStyles.bodyText,
-                              ),
-                              subtitle: Text(
-                                data['createdAt'] != null
-                                    ? (data['createdAt'] as Timestamp)
-                                          .toDate()
-                                          .toString()
-                                          .substring(0, 16)
-                                    : 'Unknown date',
-                                style: AppTextStyles.caption,
-                              ),
-                              trailing: const Icon(
-                                Icons.arrow_forward,
-                                color: AppColors.accentTeal,
-                              ),
-                              onTap: () {
-                                _showChatMessages(uid, chats[index].id);
-                              },
-                            ),
-                          );
-                        },
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  // ============================================
-  // CHAT MESSAGES (UC6)
-  // ============================================
-  void _showChatMessages(String uid, String chatId) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.8,
-        minChildSize: 0.4,
-        maxChildSize: 0.95,
-        builder: (context, scrollController) {
-          return Container(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: Colors.grey[400],
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Text('Chat Messages', style: AppTextStyles.headline2),
-                const SizedBox(height: 16),
-                Expanded(
-                  child: StreamBuilder<QuerySnapshot>(
-                    stream: FirebaseFirestore.instance
-                        .collection('users')
-                        .doc(uid)
-                        .collection('chats')
-                        .doc(chatId)
-                        .collection('messages')
-                        .orderBy('timestamp', descending: false)
-                        .snapshots(),
-                    builder: (context, snapshot) {
-                      if (!snapshot.hasData) {
-                        return const Center(child: CircularProgressIndicator());
-                      }
-                      final messages = snapshot.data!.docs;
-                      if (messages.isEmpty) {
-                        return Center(
-                          child: Text(
-                            'No messages',
-                            style: AppTextStyles.bodyText,
-                          ),
-                        );
-                      }
-                      return ListView.builder(
-                        controller: scrollController,
-                        itemCount: messages.length,
-                        itemBuilder: (context, index) {
-                          final data =
-                              messages[index].data() as Map<String, dynamic>;
-                          final isUser = data['sender'] == 'user';
-                          return Align(
-                            alignment: isUser
-                                ? Alignment.centerRight
-                                : Alignment.centerLeft,
-                            child: Container(
-                              margin: const EdgeInsets.symmetric(vertical: 4),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 8,
-                              ),
-                              decoration: BoxDecoration(
-                                color: isUser
-                                    ? AppColors.primaryColor
-                                    : AppColors.secondaryBg,
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    data['content'] ?? '',
-                                    style: AppTextStyles.bodyText,
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    data['timestamp'] != null
-                                        ? (data['timestamp'] as Timestamp)
-                                              .toDate()
-                                              .toString()
-                                              .substring(0, 16)
-                                        : '',
-                                    style: AppTextStyles.caption,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
+  void _showUserChatHistory(String uid, {String email = ''}) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AdminChatHistoryScreen(uid: uid, email: email),
       ),
     );
   }
@@ -531,28 +517,41 @@ class _AdminScreenState extends State<AdminScreen> {
   // ============================================
   @override
   Widget build(BuildContext context) {
+    context.watch<ThemeController>();
     return Scaffold(
       backgroundColor: AppColors.darkBg,
       appBar: AppBar(
         backgroundColor: AppColors.secondaryBg,
         elevation: 0,
-        title: const Text('Admin Panel', style: AppTextStyles.headline2),
+        centerTitle: false,
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const BrandMini(),
+            const SizedBox(width: 10),
+            Text('Admin', style: AppTextStyles.headline2),
+          ],
+        ),
         actions: [
+          const ThemeToggleButton(),
           IconButton(
             onPressed: () {
               showDialog(
                 context: context,
                 builder: (context) => AlertDialog(
                   backgroundColor: AppColors.secondaryBg,
-                  title: const Text('Logout', style: AppTextStyles.headline2),
-                  content: const Text(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(22),
+                  ),
+                  title: Text('Logout', style: AppTextStyles.headline2),
+                  content: Text(
                     'Are you sure you want to logout?',
                     style: AppTextStyles.bodyText,
                   ),
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.pop(context),
-                      child: const Text(
+                      child: Text(
                         'Cancel',
                         style: TextStyle(color: AppColors.accentTeal),
                       ),
@@ -562,16 +561,13 @@ class _AdminScreenState extends State<AdminScreen> {
                         Navigator.pop(context);
                         await _authService.logout();
                         if (mounted) {
-                          Navigator.pushReplacement(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) =>
-                                  LoginScreen(onSwitchToRegister: () {}),
-                            ),
+                          Navigator.of(context).pushNamedAndRemoveUntil(
+                            '/login',
+                            (route) => false,
                           );
                         }
                       },
-                      child: const Text(
+                      child: Text(
                         'Logout',
                         style: TextStyle(color: AppColors.errorRed),
                       ),
@@ -580,7 +576,7 @@ class _AdminScreenState extends State<AdminScreen> {
                 ),
               );
             },
-            icon: const Icon(Icons.logout, color: AppColors.errorRed),
+            icon: Icon(Icons.logout, color: AppColors.errorRed),
           ),
         ],
       ),
@@ -588,14 +584,19 @@ class _AdminScreenState extends State<AdminScreen> {
         length: 2,
         child: Column(
           children: [
-            TabBar(
-              labelColor: AppColors.accentTeal,
-              unselectedLabelColor: AppColors.textLight,
-              indicatorColor: AppColors.primaryColor,
-              tabs: const [
-                Tab(text: 'Statistics'),
-                Tab(text: 'Users'),
-              ],
+            Container(
+              color: AppColors.secondaryBg,
+              child: TabBar(
+                labelColor: AppColors.accentTeal,
+                unselectedLabelColor: AppColors.muted,
+                indicatorColor: AppColors.accentTeal,
+                indicatorWeight: 2.4,
+                dividerColor: AppColors.border,
+                tabs: const [
+                  Tab(text: 'Statistics'),
+                  Tab(text: 'Users'),
+                ],
+              ),
             ),
             Expanded(
               child: TabBarView(

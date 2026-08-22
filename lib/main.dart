@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:provider/provider.dart';
 import 'firebase_options.dart';
 import 'screens/login_screen.dart';
 import 'screens/register_screen.dart';
@@ -8,7 +9,8 @@ import 'screens/chat_screen.dart';
 import 'screens/admin_screen.dart';
 import 'services/auth_service.dart';
 import 'utils/constants.dart';
-import 'package:google_fonts/google_fonts.dart';
+import 'widgets/app_chrome.dart';
+import 'theme/theme_controller.dart';
 
 // ============================================
 // MAIN
@@ -20,7 +22,14 @@ void main() async {
   } catch (e) {
     debugPrint('Firebase init error: $e');
   }
-  runApp(const MyApp());
+  final themeController = ThemeController();
+  await themeController.load();
+  runApp(
+    ChangeNotifierProvider.value(
+      value: themeController,
+      child: const MyApp(),
+    ),
+  );
 }
 
 class MyApp extends StatelessWidget {
@@ -28,25 +37,19 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = context.watch<ThemeController>();
     return MaterialApp(
       title: 'DermaAI - Skin Care Assistant',
-      theme: ThemeData(
-        primaryColor: AppColors.primaryColor,
-        primarySwatch: Colors.teal,
-        scaffoldBackgroundColor: AppColors.darkBg,
-        fontFamily: GoogleFonts.inter().fontFamily,
-        useMaterial3: true,
-        brightness: Brightness.dark,
-        appBarTheme: const AppBarTheme(
-          elevation: 0,
-          centerTitle: true,
-          backgroundColor: AppColors.secondaryBg,
-          foregroundColor: AppColors.textLight,
-        ),
-      ),
-      themeMode: ThemeMode.dark,
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
+      themeMode: theme.mode,
       home: const AuthWrapper(),
-      routes: {'/admin-login': (context) => const AdminLoginScreen()},
+      routes: {
+        '/login': (context) => const AuthScreen(),
+        '/admin': (context) => const AdminScreen(),
+        '/chat': (context) => const ChatScreen(),
+        '/admin-login': (context) => const AdminLoginScreen(),
+      },
       debugShowCheckedModeBanner: false,
     );
   }
@@ -85,9 +88,9 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
           password == AdminCredentials.adminPassword) {
         await _authService.login(email, password);
         if (mounted) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (_) => const AdminScreen()),
+          Navigator.of(context).pushNamedAndRemoveUntil(
+            '/admin',
+            (route) => false,
           );
         }
         return;
@@ -107,64 +110,70 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    context.watch<ThemeController>();
     return Scaffold(
       backgroundColor: AppColors.darkBg,
-      appBar: AppBar(title: const Text('Admin Login')),
-      body: Padding(
-        padding: const EdgeInsets.all(AppSpacing.large),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            TextField(
-              controller: _emailController,
-              decoration: InputDecoration(
-                filled: true,
-                fillColor: AppColors.secondaryBg,
-                hintText: 'Admin Email',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(AppBorderRadius.normal),
-                ),
-              ),
-            ),
-            const SizedBox(height: AppSpacing.normal),
-            TextField(
-              controller: _passwordController,
-              obscureText: _obscurePassword,
-              decoration: InputDecoration(
-                filled: true,
-                fillColor: AppColors.secondaryBg,
-                hintText: 'Password',
-                suffixIcon: IconButton(
-                  icon: Icon(
-                    _obscurePassword ? Icons.visibility : Icons.visibility_off,
+      extendBodyBehindAppBar: true,
+      appBar: AppBar(
+        title: Text('Admin Login'),
+        actions: const [ThemeToggleButton()],
+      ),
+      body: AppBackground(
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.large),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const BrandMark(size: 72, iconSize: 34),
+                const SizedBox(height: AppSpacing.large),
+                TextField(
+                  controller: _emailController,
+                  style: AppTextStyles.bodyText,
+                  decoration: AppDecorations.input(
+                    hint: 'Admin Email',
+                    prefixIcon: Icon(
+                      Icons.admin_panel_settings_outlined,
+                      color: AppColors.accentTeal,
+                    ),
                   ),
-                  onPressed: () =>
-                      setState(() => _obscurePassword = !_obscurePassword),
                 ),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(AppBorderRadius.normal),
+                const SizedBox(height: AppSpacing.normal),
+                TextField(
+                  controller: _passwordController,
+                  style: AppTextStyles.bodyText,
+                  obscureText: _obscurePassword,
+                  decoration: AppDecorations.input(
+                    hint: 'Password',
+                    prefixIcon: Icon(
+                      Icons.lock_outline_rounded,
+                      color: AppColors.accentTeal,
+                    ),
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _obscurePassword
+                            ? Icons.visibility_off_outlined
+                            : Icons.visibility_outlined,
+                        color: AppColors.muted,
+                      ),
+                      onPressed: () =>
+                          setState(() => _obscurePassword = !_obscurePassword),
+                    ),
+                  ),
                 ),
-              ),
+                if (_errorMessage != null) ...[
+                  const SizedBox(height: AppSpacing.normal),
+                  ErrorBanner(message: _errorMessage!),
+                ],
+                const SizedBox(height: AppSpacing.large),
+                GradientButton(
+                  label: 'Login as Admin',
+                  isLoading: _isLoading,
+                  onPressed: _isLoading ? null : _handleAdminLogin,
+                ),
+              ],
             ),
-            if (_errorMessage != null) ...[
-              const SizedBox(height: AppSpacing.normal),
-              Text(
-                _errorMessage!,
-                style: const TextStyle(color: AppColors.errorRed),
-              ),
-            ],
-            const SizedBox(height: AppSpacing.normal),
-            ElevatedButton(
-              onPressed: _isLoading ? null : _handleAdminLogin,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.primaryColor,
-                minimumSize: const Size(double.infinity, 52),
-              ),
-              child: _isLoading
-                  ? const CircularProgressIndicator(color: Colors.white)
-                  : const Text('Login as Admin'),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -179,38 +188,45 @@ class AuthWrapper extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<dynamic>(
+    return StreamBuilder<User?>(
       stream: FirebaseAuth.instance.authStateChanges(),
+      initialData: FirebaseAuth.instance.currentUser,
       builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
+        final user = snapshot.data ?? FirebaseAuth.instance.currentUser;
+
+        if (snapshot.connectionState == ConnectionState.waiting &&
+            user == null) {
           return Scaffold(
             backgroundColor: AppColors.darkBg,
-            body: const Center(
-              child: CircularProgressIndicator(
-                valueColor: AlwaysStoppedAnimation<Color>(AppColors.accentTeal),
+            body: AppBackground(
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const BrandMark(size: 72, iconSize: 34),
+                    const SizedBox(height: 28),
+                    CircularProgressIndicator(
+                      strokeWidth: 2.4,
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        AppColors.primaryColor,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           );
         }
 
-        if (snapshot.hasData) {
-          // User is logged in
-          final user = snapshot.data;
-
-          // Check if admin
-          return FutureBuilder<bool>(
-            future: AuthService().isUserAdmin(user.uid),
-            builder: (context, adminSnapshot) {
-              if (adminSnapshot.hasData && adminSnapshot.data == true) {
-                return const AdminScreen();
-              }
-              return const ChatScreen();
-            },
-          );
+        if (user == null) {
+          return const AuthScreen();
         }
 
-        // User is not logged in
-        return const AuthScreen();
+        if (AdminCredentials.isAdminEmail(user.email)) {
+          return const AdminScreen();
+        }
+
+        return const ChatScreen();
       },
     );
   }
@@ -231,6 +247,7 @@ class _AuthScreenState extends State<AuthScreen> {
 
   @override
   Widget build(BuildContext context) {
+    context.watch<ThemeController>();
     return _showLogin
         ? LoginScreen(
             onSwitchToRegister: () {

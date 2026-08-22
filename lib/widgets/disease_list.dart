@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../theme/theme_controller.dart';
 import '../utils/constants.dart';
 
 // ============================================
@@ -16,13 +18,14 @@ class DiseaseListWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    context.watch<ThemeController>();
     return Container(
       constraints: BoxConstraints(
         maxHeight: MediaQuery.of(context).size.height * 0.75,
       ),
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: AppColors.secondaryBg,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
       ),
       child: SafeArea(
         child: Column(
@@ -39,13 +42,13 @@ class DiseaseListWidget extends StatelessWidget {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text(
+                  Text(
                     'Common Skin Diseases',
                     style: AppTextStyles.headline2,
                   ),
                   IconButton(
                     onPressed: onClose,
-                    icon: const Icon(Icons.close, color: AppColors.textLight),
+                    icon: Icon(Icons.close, color: AppColors.textLight),
                   ),
                 ],
               ),
@@ -61,23 +64,21 @@ class DiseaseListWidget extends StatelessWidget {
                   return Padding(
                     padding: const EdgeInsets.only(bottom: AppSpacing.small),
                     child: Material(
-                      color: AppColors.darkBg,
+                      color: AppColors.surface,
                       borderRadius: BorderRadius.circular(
-                        AppBorderRadius.normal,
+                        AppBorderRadius.medium,
                       ),
                       child: InkWell(
                         borderRadius: BorderRadius.circular(
-                          AppBorderRadius.normal,
+                          AppBorderRadius.medium,
                         ),
                         onTap: () => onDiseaseSelected(disease),
                         child: Container(
                           padding: const EdgeInsets.all(AppSpacing.normal),
                           decoration: BoxDecoration(
-                            border: Border.all(
-                              color: AppColors.primaryColor.withOpacity(0.3),
-                            ),
+                            border: Border.all(color: AppColors.border),
                             borderRadius: BorderRadius.circular(
-                              AppBorderRadius.normal,
+                              AppBorderRadius.medium,
                             ),
                           ),
                           child: Row(
@@ -86,17 +87,17 @@ class DiseaseListWidget extends StatelessWidget {
                                 width: 40,
                                 height: 40,
                                 decoration: BoxDecoration(
-                                  color: AppColors.primaryColor.withOpacity(
-                                    0.2,
+                                  color: AppColors.primaryColor.withValues(
+                                    alpha: 0.12,
                                   ),
                                   borderRadius: BorderRadius.circular(
                                     AppBorderRadius.small,
                                   ),
                                 ),
-                                child: const Icon(
-                                  Icons.health_and_safety,
-                                  color: AppColors.accentTeal,
-                                  size: 20,
+                                child: Icon(
+                                  Icons.spa_outlined,
+                                  color: AppColors.primaryColor,
+                                  size: 18,
                                 ),
                               ),
                               const SizedBox(width: AppSpacing.normal),
@@ -106,9 +107,9 @@ class DiseaseListWidget extends StatelessWidget {
                                   style: AppTextStyles.subtitle1,
                                 ),
                               ),
-                              const Icon(
-                                Icons.chevron_right,
-                                color: AppColors.accentTeal,
+                              Icon(
+                                Icons.chevron_right_rounded,
+                                color: AppColors.muted,
                               ),
                             ],
                           ),
@@ -121,21 +122,25 @@ class DiseaseListWidget extends StatelessWidget {
             ),
             Padding(
               padding: const EdgeInsets.all(AppSpacing.large),
-              child: ElevatedButton(
-                onPressed: onClose,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primaryColor,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(AppBorderRadius.normal),
+              child: SizedBox(
+                height: 50,
+                child: OutlinedButton(
+                  onPressed: onClose,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.textLight,
+                    side: BorderSide(color: AppColors.border),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(
+                        AppBorderRadius.medium,
+                      ),
+                    ),
                   ),
-                ),
-                child: const Text(
-                  'Close',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
+                  child: Text(
+                    'Close',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
               ),
