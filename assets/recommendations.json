@@ -1,0 +1,17 @@
+{
+  "Acne": "It is acne. Use benzoyl peroxide or salicylic acid. Keep skin clean and avoid picking. Consult a dermatologist for severe cases.",
+  "Contact Dermatitis": "It is contact dermatitis. Avoid the irritant/allergen. Use topical corticosteroids and moisturizers. If severe, consult a dermatologist.",
+  "Eczema": "It is eczema. Atopic dermatitis with dry, itchy skin. Use moisturizer and topical corticosteroids. Avoid harsh soaps and irritants.",
+  "Fungal Infection": "It is a fungal infection. Use antifungal cream. Keep area clean and dry. If no improvement, consult a dermatologist.",
+  "Herpes": "It is herpes. Use antiviral medication. Avoid touching the area. Consult a dermatologist for proper treatment.",
+  "Insect Bite Dermatitis": "It is insect bite dermatitis. Apply cold compress. Use antihistamines and hydrocortisone cream. Watch for signs of infection.",
+  "Lichen Planus": "It is lichen planus. Use topical corticosteroids. If widespread, consult a dermatologist for systemic treatment.",
+  "Miliaria": "It is miliaria (heat rash). Keep cool and dry. Use calamine lotion. Avoid excessive sweating.",
+  "Palmoplantar Keratoderma": "It is palmoplantar keratoderma. Use emollients and keratolytic agents. Consult a dermatologist for advanced treatment.",
+  "Papular Urticaria": "It is papular urticaria. Avoid insect bites. Use antihistamines and topical corticosteroids. Consult a dermatologist for persistent cases.",
+  "Psoriasis": "It is psoriasis. Use topical steroids and moisturizers. Phototherapy may help. Consult a dermatologist for systemic treatment.",
+  "Purpura": "It is purpura. Consult a doctor immediately. This may indicate a bleeding disorder or vasculitis.",
+  "Rosacea": "It is rosacea. Use gentle skincare. Avoid triggers like spicy food and alcohol. Consult a dermatologist for prescription treatment.",
+  "Seborrheic Dermatitis": "It is seborrheic dermatitis. Use antifungal shampoo. Apply topical corticosteroids. If scalp, use medicated shampoos.",
+  "Urticaria": "It is urticaria (hives). Use antihistamines. Avoid triggers. If chronic, consult a dermatologist."
+}

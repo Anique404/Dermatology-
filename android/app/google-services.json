@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "156973017800",
+    "project_id": "dermai-skin-care",
+    "storage_bucket": "dermai-skin-care.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:156973017800:android:0d41cd8839f294cc1653fd",
+        "android_client_info": {
+          "package_name": "com.example.skin_care_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBiOiRvinU2xUx_FBGoLEoeRrNdaN7v-UU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
