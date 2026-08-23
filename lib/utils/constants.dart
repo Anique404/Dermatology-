@@ -279,6 +279,7 @@ class ModelConfig {
   static const String recommendationsPath = 'assets/recommendations.json';
   static const int imageSize = 224;
   static const double confidenceThreshold = 0.5;
+  static const int maxUploadBytes = 50 * 1024 * 1024;
 }
 
 class CloudinaryConfig {
@@ -288,6 +289,10 @@ class CloudinaryConfig {
       'https://api.cloudinary.com/v1_1/$cloudName/raw/upload';
   static const String autoUploadUrl =
       'https://api.cloudinary.com/v1_1/$cloudName/auto/upload';
+  static const String imageUploadUrl =
+      'https://api.cloudinary.com/v1_1/$cloudName/image/upload';
+  static const int unsignedMaxBytes = 10 * 1024 * 1024;
+  static const int uploadChunkBytes = 9 * 1024 * 1024;
 }
 
 // ============================================

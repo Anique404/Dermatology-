@@ -505,18 +505,24 @@ class FirestoreService {
     if (size <= 0) {
       throw Exception('The selected file is empty');
     }
+    if (size > ModelConfig.maxUploadBytes) {
+      throw Exception('Model file must be 50 MB or smaller');
+    }
 
-    onProgress?.call(0.1);
-    final url = await _uploadToCloudinary(
+    onProgress?.call(0.05);
+    final uploaded = await _uploadToCloudinary(
       file: file,
       fileName: cleanedName,
+      fileSize: size,
       onProgress: onProgress,
     );
     onProgress?.call(1);
 
     await _currentModelRef.set({
       'version': cleanedName,
-      'url': url,
+      'url': uploaded['url'],
+      'parts': uploaded['parts'],
+      'bytes': size,
       'updatedAt': FieldValue.serverTimestamp(),
       'updatedBy': updatedBy,
     });
@@ -525,44 +531,76 @@ class FirestoreService {
     return saved.data() ??
         {
           'version': cleanedName,
-          'url': url,
+          'url': uploaded['url'],
+          'parts': uploaded['parts'],
           'updatedBy': updatedBy,
         };
   }
 
-  Future<String> _uploadToCloudinary({
+  Future<Map<String, dynamic>> _uploadToCloudinary({
     required File file,
     required String fileName,
+    required int fileSize,
     void Function(double progress)? onProgress,
   }) async {
-    Future<http.StreamedResponse> send(String endpoint) async {
+    final chunkSize = CloudinaryConfig.uploadChunkBytes;
+    final stamp = DateTime.now().millisecondsSinceEpoch;
+    final partUrls = <String>[];
+    final raf = await file.open();
+
+    try {
+      var offset = 0;
+      var partIndex = 0;
+      while (offset < fileSize) {
+        final length = (fileSize - offset) < chunkSize
+            ? (fileSize - offset)
+            : chunkSize;
+        final bytes = await raf.read(length);
+        final safeName = fileName.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+        final partName = '${stamp}_p${partIndex}_$safeName';
+        onProgress?.call(0.08 + 0.85 * (offset / fileSize));
+        final url = await _uploadCloudinaryBytes(
+          bytes: bytes,
+          fileName: partName,
+        );
+        partUrls.add(url);
+        offset += length;
+        partIndex++;
+      }
+    } finally {
+      await raf.close();
+    }
+
+    if (partUrls.isEmpty) {
+      throw Exception('Cloudinary did not return a file URL');
+    }
+    return {
+      'url': partUrls.first,
+      'parts': partUrls,
+    };
+  }
+
+  Future<String> _uploadCloudinaryBytes({
+    required List<int> bytes,
+    required String fileName,
+  }) async {
+    Future<http.Response> send(String endpoint) {
       final request = http.MultipartRequest('POST', Uri.parse(endpoint));
       request.fields['upload_preset'] = CloudinaryConfig.uploadPreset;
       request.files.add(
-        await http.MultipartFile.fromPath(
-          'file',
-          file.path,
-          filename: fileName,
-        ),
+        http.MultipartFile.fromBytes('file', bytes, filename: fileName),
       );
-      return request.send();
+      return request.send().then(http.Response.fromStream);
     }
 
-    onProgress?.call(0.35);
     var response = await send(CloudinaryConfig.rawUploadUrl);
-    var body = await response.stream.bytesToString();
-
     if (response.statusCode >= 400) {
-      onProgress?.call(0.55);
       response = await send(CloudinaryConfig.autoUploadUrl);
-      body = await response.stream.bytesToString();
     }
-
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception(_cloudinaryError(body));
+      throw Exception(_cloudinaryError(response.body));
     }
-
-    final decoded = jsonDecode(body);
+    final decoded = jsonDecode(response.body);
     if (decoded is! Map || decoded['secure_url'] == null) {
       throw Exception('Cloudinary did not return a file URL');
     }
@@ -574,10 +612,54 @@ class FirestoreService {
       final decoded = jsonDecode(body);
       final error = decoded is Map ? decoded['error'] : null;
       if (error is Map && error['message'] != null) {
-        return error['message'].toString();
+        final message = error['message'].toString();
+        if (message.toLowerCase().contains('file size too large')) {
+          return 'Cloudinary rejected a file part. Try again, or raise the unsigned preset max size to 50 MB.';
+        }
+        return message;
       }
     } catch (_) {}
     return 'Cloudinary upload failed';
+  }
+
+  Future<String> uploadChatImage(File file) async {
+    if (!await file.exists()) {
+      throw Exception('Selected image could not be read');
+    }
+    final size = await file.length();
+    if (size <= 0) {
+      throw Exception('The selected image is empty');
+    }
+    if (size > CloudinaryConfig.unsignedMaxBytes) {
+      throw Exception('Image must be 10 MB or smaller');
+    }
+
+    final fileName = file.path.split(RegExp(r'[/\\]')).last;
+    Future<http.Response> send(String endpoint) async {
+      final request = http.MultipartRequest('POST', Uri.parse(endpoint));
+      request.fields['upload_preset'] = CloudinaryConfig.uploadPreset;
+      request.files.add(
+        await http.MultipartFile.fromPath(
+          'file',
+          file.path,
+          filename: fileName.isEmpty ? 'chat.jpg' : fileName,
+        ),
+      );
+      return http.Response.fromStream(await request.send());
+    }
+
+    var response = await send(CloudinaryConfig.imageUploadUrl);
+    if (response.statusCode >= 400) {
+      response = await send(CloudinaryConfig.autoUploadUrl);
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_cloudinaryError(response.body));
+    }
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map || decoded['secure_url'] == null) {
+      throw Exception('Cloudinary did not return an image URL');
+    }
+    return decoded['secure_url'].toString();
   }
 
   // Get user's chat history (for admin panel)

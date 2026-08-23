@@ -44,12 +44,7 @@ class ChatBubble extends StatelessWidget {
                 padding: const EdgeInsets.only(bottom: 8),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(16),
-                  child: Image.file(
-                    File(message.imagePath!),
-                    width: 200,
-                    height: 200,
-                    fit: BoxFit.cover,
-                  ),
+                  child: _MessageImage(path: message.imagePath!),
                 ),
               ),
             Container(
@@ -123,6 +118,64 @@ class ChatBubble extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _MessageImage extends StatelessWidget {
+  final String path;
+
+  const _MessageImage({required this.path});
+
+  @override
+  Widget build(BuildContext context) {
+    final isNetwork =
+        path.startsWith('http://') || path.startsWith('https://');
+    if (isNetwork) {
+      return Image.network(
+        path,
+        width: 200,
+        height: 200,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => const _MissingImage(),
+      );
+    }
+
+    final file = File(path);
+    if (!file.existsSync()) {
+      return const _MissingImage();
+    }
+    return Image.file(
+      file,
+      width: 200,
+      height: 200,
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => const _MissingImage(),
+    );
+  }
+}
+
+class _MissingImage extends StatelessWidget {
+  const _MissingImage();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 200,
+      height: 140,
+      color: AppColors.surface,
+      alignment: Alignment.center,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.hide_image_outlined, color: AppColors.muted, size: 28),
+          const SizedBox(height: 6),
+          Text(
+            'Photo unavailable',
+            style: AppTextStyles.caption.copyWith(fontSize: 12),
+          ),
+        ],
       ),
     );
   }

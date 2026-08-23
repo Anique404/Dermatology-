@@ -1,5 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
+import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
@@ -50,9 +52,15 @@ class ModelService {
       final options = InterpreterOptions()..threads = 2;
 
       if (hasRemote) {
+        final parts = remote?['parts'];
+        final partUrls = parts is List
+            ? parts.map((e) => e.toString()).where((e) => e.isNotEmpty).toList()
+            : <String>[];
         final modelFile = await _ensureLocalModelFile(
           url: remoteUrl,
           version: targetVersion,
+          partUrls: partUrls,
+          bytes: remote?['bytes'],
         );
         _interpreter = Interpreter.fromFile(modelFile, options: options);
       } else {
@@ -63,23 +71,7 @@ class ModelService {
       }
 
       print('✅ Model loaded!');
-
-      if (_classNames == null) {
-        final classNamesJson = await rootBundle.loadString(
-          ModelConfig.classNamesPath,
-        );
-        _classNames = List<String>.from(jsonDecode(classNamesJson));
-        print('✅ Class names loaded: ${_classNames?.length}');
-      }
-
-      if (_recommendations == null) {
-        final recommendationsJson = await rootBundle.loadString(
-          ModelConfig.recommendationsPath,
-        );
-        _recommendations = jsonDecode(recommendationsJson);
-        print('✅ Recommendations loaded');
-      }
-
+      await _loadMetadata();
       _loadedVersion = targetVersion;
       _isInitialized = true;
     } catch (e) {
@@ -92,6 +84,7 @@ class ModelService {
             ModelConfig.modelPath,
             options: options,
           );
+          await _loadMetadata();
           _loadedVersion = 'bundled';
           _isInitialized = true;
           return;
@@ -104,25 +97,55 @@ class ModelService {
     }
   }
 
+  Future<void> _loadMetadata() async {
+    if (_classNames == null) {
+      final classNamesJson = await rootBundle.loadString(
+        ModelConfig.classNamesPath,
+      );
+      _classNames = List<String>.from(jsonDecode(classNamesJson));
+      print('✅ Class names loaded: ${_classNames?.length}');
+    }
+    if (_recommendations == null) {
+      final recommendationsJson = await rootBundle.loadString(
+        ModelConfig.recommendationsPath,
+      );
+      _recommendations = jsonDecode(recommendationsJson);
+      print('✅ Recommendations loaded');
+    }
+  }
+
   Future<File> _ensureLocalModelFile({
     required String url,
     required String version,
+    List<String> partUrls = const [],
+    dynamic bytes,
   }) async {
     final directory = await getApplicationDocumentsDirectory();
     final modelFile = File('${directory.path}/$_cacheFileName');
     final prefs = await SharedPreferences.getInstance();
+    final cacheToken =
+        '$version:${bytes ?? ''}:${partUrls.length}:${partUrls.isEmpty ? url : partUrls.last}';
     final cachedVersion = prefs.getString(_cacheVersionKey);
-    if (cachedVersion == version && await modelFile.exists()) {
+    if (cachedVersion == cacheToken && await modelFile.exists()) {
       return modelFile;
     }
 
     print('⬇️ Downloading model $version...');
-    final response = await http.get(Uri.parse(url));
-    if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
-      throw Exception('Failed to download model (${response.statusCode})');
+    final urls = partUrls.isNotEmpty ? partUrls : [url];
+    final builder = BytesBuilder(copy: false);
+    for (final partUrl in urls) {
+      final response = await http.get(Uri.parse(partUrl));
+      if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
+        throw Exception('Failed to download model (${response.statusCode})');
+      }
+      builder.add(response.bodyBytes);
     }
-    await modelFile.writeAsBytes(response.bodyBytes, flush: true);
-    await prefs.setString(_cacheVersionKey, version);
+    final data = builder.takeBytes();
+    if (data.isEmpty) {
+      throw Exception('Downloaded model file is empty');
+    }
+    await modelFile.writeAsBytes(data, flush: true);
+    await prefs.setString(_cacheVersionKey, cacheToken);
     return modelFile;
   }
 
@@ -161,21 +184,33 @@ class ModelService {
       _interpreter!.run(input, output);
       print('✅ Inference complete!');
 
-      final predictions = output[0];
+      var scores = List<double>.from(output[0]);
+      if (scores.any((value) => value < 0 || value > 1.01)) {
+        scores = _softmax(scores);
+      }
+
+      final labelCount = _classNames?.length ?? 0;
+      final usable = labelCount == 0
+          ? scores.length
+          : (scores.length < labelCount ? scores.length : labelCount);
       int maxIdx = 0;
-      double maxConf = 0.0;
-      for (int i = 0; i < predictions.length; i++) {
-        if (predictions[i] > maxConf) {
-          maxConf = predictions[i];
+      double maxConf = -1;
+      for (int i = 0; i < usable; i++) {
+        if (scores[i] > maxConf) {
+          maxConf = scores[i];
           maxIdx = i;
         }
       }
 
-      final disease = _classNames?[maxIdx] ?? 'Unknown';
-      final recommendation =
-          _recommendations?[disease] ?? 'Consult a dermatologist.';
+      final rawName = (labelCount > 0 && maxIdx < labelCount)
+          ? _classNames![maxIdx]
+          : 'Unknown';
+      final disease = _displayDiseaseName(rawName);
+      final recommendation = _recommendationFor(disease);
 
-      print('✅ Prediction: $disease (${(maxConf * 100).toStringAsFixed(2)}%)');
+      print(
+        '✅ Prediction: $disease (${(maxConf * 100).toStringAsFixed(2)}%) index=$maxIdx/$usable of ${scores.length}',
+      );
 
       return {
         'diseaseName': disease,
@@ -208,12 +243,37 @@ class ModelService {
     ];
   }
 
-  Map<String, dynamic>? getDiseaseInfo(String diseaseName) {
-    if (_recommendations != null &&
-        _recommendations!.containsKey(diseaseName)) {
-      return {'recommendation': _recommendations![diseaseName]};
+  String _displayDiseaseName(String raw) {
+    return raw.replaceAll('_', ' ').trim();
+  }
+
+  String _recommendationFor(String disease) {
+    final recs = _recommendations;
+    if (recs == null) return 'Consult a dermatologist.';
+    final spaced = _displayDiseaseName(disease);
+    final underscored = spaced.replaceAll(' ', '_');
+    final value = recs[spaced] ?? recs[disease] ?? recs[underscored];
+    if (value == null || value.toString().trim().isEmpty) {
+      return 'Consult a dermatologist.';
     }
-    return null;
+    return value.toString();
+  }
+
+  List<double> _softmax(List<double> logits) {
+    var maxLogit = logits.first;
+    for (final value in logits) {
+      if (value > maxLogit) maxLogit = value;
+    }
+    final exps = logits.map((value) => math.exp(value - maxLogit)).toList();
+    final sum = exps.fold<double>(0, (a, b) => a + b);
+    if (sum <= 0) return List<double>.filled(logits.length, 0);
+    return exps.map((value) => value / sum).toList();
+  }
+
+  Map<String, dynamic>? getDiseaseInfo(String diseaseName) {
+    final text = _recommendationFor(diseaseName);
+    if (text == 'Consult a dermatologist.') return null;
+    return {'recommendation': text};
   }
 
   void dispose() {

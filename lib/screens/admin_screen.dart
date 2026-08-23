@@ -169,8 +169,9 @@ class _AdminScreenState extends State<AdminScreen>
         text.contains('403')) {
       return 'Upload or Firestore permission denied. Check Cloudinary unsigned preset and Firestore rules.';
     }
-    if (text.contains('object-not-found')) {
-      return 'The uploaded model file was not found in Storage.';
+    if (text.toLowerCase().contains('file size too large') ||
+        text.contains('10485760')) {
+      return 'Cloudinary unsigned uploads are capped at 10 MB per part. The app now splits larger models automatically — try Upload again.';
     }
     return text;
   }
@@ -584,6 +585,14 @@ class _AdminScreenState extends State<AdminScreen>
         );
         return;
       }
+      final fileSize = await file.length();
+      if (fileSize > ModelConfig.maxUploadBytes) {
+        _showModelMessage(
+          'Model file must be 50 MB or smaller.',
+          isError: true,
+        );
+        return;
+      }
 
       final adminEmail = FirebaseAuth.instance.currentUser?.email?.trim();
       if (adminEmail == null || adminEmail.isEmpty) {
@@ -662,7 +671,7 @@ class _AdminScreenState extends State<AdminScreen>
           Text('Current model', style: AppTextStyles.headline2),
           const SizedBox(height: 4),
           Text(
-            'Upload a .tflite file to replace the model used for predictions.',
+            'Upload a .tflite file (max 50 MB) to replace the model used for predictions.',
             style: AppTextStyles.caption.copyWith(fontSize: 13.5),
           ),
           const SizedBox(height: AppSpacing.large),

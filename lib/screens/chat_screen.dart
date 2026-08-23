@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import '../models/chat_model.dart';
 import '../services/auth_service.dart';
@@ -180,7 +181,7 @@ class _ChatScreenState extends State<ChatScreen> {
         imageQuality: 85,
       );
       if (pickedFile != null) {
-        await _processImage(File(pickedFile.path));
+        await _processImage(await _persistChatImage(File(pickedFile.path)));
       }
     } catch (e) {
       _showSnackbar('Error picking image: $e');
@@ -197,11 +198,26 @@ class _ChatScreenState extends State<ChatScreen> {
         imageQuality: 85,
       );
       if (pickedFile != null) {
-        await _processImage(File(pickedFile.path));
+        await _processImage(await _persistChatImage(File(pickedFile.path)));
       }
     } catch (e) {
       _showSnackbar('Error capturing image: $e');
     }
+  }
+
+  Future<File> _persistChatImage(File source) async {
+    final documents = await getApplicationDocumentsDirectory();
+    final folder = Directory('${documents.path}/chat_images');
+    if (!await folder.exists()) {
+      await folder.create(recursive: true);
+    }
+    final extension = source.path.contains('.')
+        ? source.path.split('.').last.toLowerCase()
+        : 'jpg';
+    final dest = File(
+      '${folder.path}/${DateTime.now().millisecondsSinceEpoch}.$extension',
+    );
+    return source.copy(dest.path);
   }
 
   // ============================================
@@ -217,14 +233,23 @@ class _ChatScreenState extends State<ChatScreen> {
 
     try {
       final isFirstUserMessage = !_hasUserMessages;
+      final bytes = await imageFile.readAsBytes();
+      String imagePath = imageFile.path;
+      try {
+        imagePath = await _firestoreService.uploadChatImage(imageFile);
+      } catch (e) {
+        print('❌ Chat image Cloudinary upload error: $e');
+        _showSnackbar(
+          'Photo uploaded locally only. Cloud upload failed: ${e.toString().replaceAll('Exception: ', '')}',
+        );
+      }
 
-      // Add user message with image
       final userMessage = MessageModel(
         id: 'user_img_${DateTime.now().millisecondsSinceEpoch}',
         content: '📸 Image uploaded',
         sender: 'user',
         timestamp: DateTime.now(),
-        imagePath: imageFile.path,
+        imagePath: imagePath,
       );
       setState(() => _currentMessages.add(userMessage));
       await _persistMessage(userMessage);
@@ -233,10 +258,6 @@ class _ChatScreenState extends State<ChatScreen> {
         await _maybeUpdateChatTitle('📸 Image uploaded');
       }
 
-      // Read image bytes
-      final bytes = await imageFile.readAsBytes();
-
-      // Predict
       final result = await _modelService.predictDisease(bytes);
 
       final diseaseName = result['diseaseName'] ?? 'Unknown';
