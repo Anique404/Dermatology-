@@ -213,6 +213,8 @@ class FirestorePaths {
   static const String chatsCollection = 'chats';
   static const String messagesCollection = 'messages';
   static const String predictionsCollection = 'predictions';
+  static const String modelsCollection = 'models';
+  static const String currentModelDoc = 'current';
 }
 
 // ============================================
@@ -277,6 +279,15 @@ class ModelConfig {
   static const String recommendationsPath = 'assets/recommendations.json';
   static const int imageSize = 224;
   static const double confidenceThreshold = 0.5;
+}
+
+class CloudinaryConfig {
+  static const String cloudName = 'deu35cqde';
+  static const String uploadPreset = 'epictour_uploads';
+  static const String rawUploadUrl =
+      'https://api.cloudinary.com/v1_1/$cloudName/raw/upload';
+  static const String autoUploadUrl =
+      'https://api.cloudinary.com/v1_1/$cloudName/auto/upload';
 }
 
 // ============================================

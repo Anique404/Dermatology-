@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
 import '../services/firestore_service.dart';
@@ -20,9 +22,11 @@ class AdminScreen extends StatefulWidget {
   State<AdminScreen> createState() => _AdminScreenState();
 }
 
-class _AdminScreenState extends State<AdminScreen> {
+class _AdminScreenState extends State<AdminScreen>
+    with SingleTickerProviderStateMixin {
   final AuthService _authService = AuthService();
   final FirestoreService _firestoreService = FirestoreService();
+  late final TabController _tabController;
   int _totalUsers = 0;
   int _totalChats = 0;
   int _totalPredictions = 0;
@@ -34,18 +38,31 @@ class _AdminScreenState extends State<AdminScreen> {
   StreamSubscription<QuerySnapshot>? _usersSub;
   StreamSubscription<QuerySnapshot>? _chatsSub;
   StreamSubscription<QuerySnapshot>? _predictionsSub;
+  StreamSubscription<Map<String, dynamic>?>? _modelSub;
+  Map<String, dynamic>? _currentModel;
+  bool _modelLoading = true;
+  String? _modelError;
+  bool _uploadingModel = false;
+  double _uploadProgress = 0;
 
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 3, vsync: this);
+    _tabController.addListener(() {
+      if (!mounted || _tabController.indexIsChanging) return;
+      setState(() {});
+    });
     _ensureAuthAndStart();
   }
 
   @override
   void dispose() {
+    _tabController.dispose();
     _usersSub?.cancel();
     _chatsSub?.cancel();
     _predictionsSub?.cancel();
+    _modelSub?.cancel();
     super.dispose();
   }
 
@@ -119,6 +136,20 @@ class _AdminScreenState extends State<AdminScreen> {
         firestore.collection('predictions').snapshots().listen((_) {
       _loadStats();
     }, onError: (e) => print('❌ Predictions stream error: $e'));
+    _modelSub = _firestoreService.watchCurrentModel().listen((data) {
+      if (!mounted) return;
+      setState(() {
+        _currentModel = data;
+        _modelLoading = false;
+        _modelError = null;
+      });
+    }, onError: (e) {
+      if (!mounted) return;
+      setState(() {
+        _modelError = _friendlyModelError(e);
+        _modelLoading = false;
+      });
+    });
   }
 
   String _friendlyFirestoreError(Object e) {
@@ -129,6 +160,25 @@ class _AdminScreenState extends State<AdminScreen> {
       return 'Cloud Firestore is not enabled for project dermai-skin-care. Open Firebase Console → Firestore Database → Create database (test mode), wait 1–2 minutes, then pull to refresh.';
     }
     return 'Could not load stats: $e';
+  }
+
+  String _friendlyModelError(Object e) {
+    final text = e.toString().replaceAll('Exception: ', '');
+    if (text.contains('PERMISSION_DENIED') ||
+        text.contains('unauthorized') ||
+        text.contains('403')) {
+      return 'Upload or Firestore permission denied. Check Cloudinary unsigned preset and Firestore rules.';
+    }
+    if (text.contains('object-not-found')) {
+      return 'The uploaded model file was not found in Storage.';
+    }
+    return text;
+  }
+
+  String _bundledModelName() {
+    final path = ModelConfig.modelPath;
+    final slash = path.lastIndexOf('/');
+    return slash >= 0 ? path.substring(slash + 1) : path;
   }
 
   Future<void> _loadStats() async {
@@ -292,6 +342,8 @@ class _AdminScreenState extends State<AdminScreen> {
               icon: Icons.analytics,
               color: AppColors.successGreen,
             ),
+            const SizedBox(height: AppSpacing.large),
+            _buildModelCard(),
           ],
         ),
       ),
@@ -488,6 +540,262 @@ class _AdminScreenState extends State<AdminScreen> {
   }
 
   // ============================================
+  // UC7: ADMIN UPDATE MODEL
+  // ============================================
+  Future<void> _uploadNewModel() async {
+    if (_uploadingModel) return;
+
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.any,
+        allowMultiple: false,
+        dialogTitle: 'Select a .tflite model file',
+        withData: false,
+      );
+      if (result == null || result.files.isEmpty) return;
+
+      final picked = result.files.single;
+      final fileName = (picked.name).trim();
+      final path = picked.path;
+      final looksLikeTflite =
+          _firestoreService.isTfliteFileName(fileName) ||
+          (path != null && _firestoreService.isTfliteFileName(path));
+      if (!looksLikeTflite) {
+        _showModelMessage(
+          'Only .tflite model files are allowed. Please pick a file ending in .tflite.',
+          isError: true,
+        );
+        return;
+      }
+      if (path == null || path.isEmpty) {
+        _showModelMessage(
+          'Could not access the selected file.',
+          isError: true,
+        );
+        return;
+      }
+
+      final file = File(path);
+      final resolvedName = _firestoreService.isTfliteFileName(fileName)
+          ? fileName
+          : path.split(RegExp(r'[/\\]')).last;
+      if (!await file.exists() || await file.length() <= 0) {
+        _showModelMessage(
+          'The selected file is empty or unreadable.',
+          isError: true,
+        );
+        return;
+      }
+
+      final adminEmail = FirebaseAuth.instance.currentUser?.email?.trim();
+      if (adminEmail == null || adminEmail.isEmpty) {
+        _showModelMessage(
+          'Admin email is missing. Please log in again.',
+          isError: true,
+        );
+        return;
+      }
+
+      setState(() {
+        _uploadingModel = true;
+        _uploadProgress = 0;
+        _modelError = null;
+      });
+
+      await _firestoreService.uploadCurrentModel(
+        file: file,
+        fileName: resolvedName,
+        updatedBy: adminEmail,
+        onProgress: (progress) {
+          if (!mounted) return;
+          setState(() => _uploadProgress = progress);
+        },
+      );
+
+      if (!mounted) return;
+      _showModelMessage('Model updated successfully: $resolvedName');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _modelError = _friendlyModelError(e));
+      _showModelMessage(_friendlyModelError(e), isError: true);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _uploadingModel = false;
+          _uploadProgress = 0;
+        });
+      }
+    }
+  }
+
+  void _showModelMessage(String message, {bool isError = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: isError ? AppColors.errorRed : AppColors.successGreen,
+      ),
+    );
+  }
+
+  Widget _buildModelTab() {
+    return RefreshIndicator(
+      onRefresh: () async {
+        setState(() => _modelLoading = true);
+        try {
+          final data = await _firestoreService.getCurrentModel();
+          if (!mounted) return;
+          setState(() {
+            _currentModel = data;
+            _modelLoading = false;
+            _modelError = null;
+          });
+        } catch (e) {
+          if (!mounted) return;
+          setState(() {
+            _modelError = _friendlyModelError(e);
+            _modelLoading = false;
+          });
+        }
+      },
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(AppSpacing.large),
+        children: [
+          Text('Current model', style: AppTextStyles.headline2),
+          const SizedBox(height: 4),
+          Text(
+            'Upload a .tflite file to replace the model used for predictions.',
+            style: AppTextStyles.caption.copyWith(fontSize: 13.5),
+          ),
+          const SizedBox(height: AppSpacing.large),
+          _buildModelCard(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModelCard() {
+    final version = (_currentModel?['version']?.toString().isNotEmpty ?? false)
+        ? _currentModel!['version'].toString()
+        : _bundledModelName();
+    final updatedBy = _currentModel?['updatedBy']?.toString();
+    final updatedAt = _formatDate(_currentModel?['updatedAt']);
+    final hasRemote = _currentModel?['url']?.toString().isNotEmpty ?? false;
+
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.large),
+      decoration: AppDecorations.card,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: AppColors.primaryColor.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(
+                  Icons.memory_rounded,
+                  color: AppColors.primaryColor,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Active model', style: AppTextStyles.subtitle1),
+                    Text(
+                      hasRemote ? 'Cloudinary' : 'Bundled with app',
+                      style: AppTextStyles.caption,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.large),
+          if (_modelLoading)
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: CircularProgressIndicator(
+                  color: AppColors.primaryColor,
+                ),
+              ),
+            )
+          else ...[
+            _buildDetailRow('Version / file', version),
+            _buildDetailRow(
+              'Last updated',
+              hasRemote ? updatedAt : 'Not updated yet',
+            ),
+            _buildDetailRow(
+              'Updated by',
+              (updatedBy != null && updatedBy.isNotEmpty)
+                  ? updatedBy
+                  : 'N/A',
+            ),
+          ],
+          if (_modelError != null) ...[
+            Text(
+              _modelError!,
+              style: AppTextStyles.caption.copyWith(color: AppColors.errorRed),
+            ),
+            const SizedBox(height: AppSpacing.normal),
+          ],
+          if (_uploadingModel) ...[
+            Text(
+              'Uploading ${( _uploadProgress * 100).clamp(0, 100).toStringAsFixed(0)}%',
+              style: AppTextStyles.caption.copyWith(
+                color: AppColors.primaryColor,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+            LinearProgressIndicator(
+              value: _uploadProgress <= 0 ? null : _uploadProgress,
+              color: AppColors.primaryColor,
+              backgroundColor: AppColors.surface,
+            ),
+            const SizedBox(height: AppSpacing.normal),
+          ],
+          SizedBox(
+            width: double.infinity,
+            height: 48,
+            child: ElevatedButton.icon(
+              onPressed: _uploadingModel ? null : _uploadNewModel,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primaryColor,
+                foregroundColor:
+                    AppColors.isDark ? const Color(0xFF042F2E) : Colors.white,
+                disabledBackgroundColor: AppColors.surfaceHigh,
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              icon: Icon(
+                _uploadingModel
+                    ? Icons.cloud_upload_outlined
+                    : Icons.upload_file_rounded,
+                size: 20,
+              ),
+              label: Text(
+                _uploadingModel ? 'Uploading…' : 'Upload New Model',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================
   // DETAIL ROW
   // ============================================
   Widget _buildDetailRow(String label, String value) {
@@ -508,6 +816,104 @@ class _AdminScreenState extends State<AdminScreen> {
             maxLines: 3,
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildSegmentedTabs() {
+    final onSelected =
+        AppColors.isDark ? const Color(0xFF042F2E) : Colors.white;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      child: Container(
+        padding: const EdgeInsets.all(5),
+        decoration: BoxDecoration(
+          color: AppColors.secondaryBg,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: AppColors.border, width: 1.3),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(
+                alpha: AppColors.isDark ? 0.28 : 0.06,
+              ),
+              blurRadius: 16,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            _buildTabItem(
+              index: 0,
+              icon: Icons.insights_rounded,
+              label: 'Stats',
+              onSelected: onSelected,
+            ),
+            _buildTabItem(
+              index: 1,
+              icon: Icons.group_rounded,
+              label: 'Users',
+              onSelected: onSelected,
+            ),
+            _buildTabItem(
+              index: 2,
+              icon: Icons.memory_rounded,
+              label: 'Model',
+              onSelected: onSelected,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTabItem({
+    required int index,
+    required IconData icon,
+    required String label,
+    required Color onSelected,
+  }) {
+    final selected = _tabController.index == index;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () => _tabController.animateTo(index),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+          padding: const EdgeInsets.symmetric(vertical: 11),
+          decoration: BoxDecoration(
+            color: selected ? AppColors.primaryColor : Colors.transparent,
+            borderRadius: BorderRadius.circular(13),
+            boxShadow: selected
+                ? [
+                    BoxShadow(
+                      color: AppColors.primaryColor.withValues(alpha: 0.35),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                size: 18,
+                color: selected ? onSelected : AppColors.muted,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: selected ? onSelected : AppColors.muted,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -580,31 +986,20 @@ class _AdminScreenState extends State<AdminScreen> {
           ),
         ],
       ),
-      body: DefaultTabController(
-        length: 2,
-        child: Column(
-          children: [
-            Container(
-              color: AppColors.secondaryBg,
-              child: TabBar(
-                labelColor: AppColors.accentTeal,
-                unselectedLabelColor: AppColors.muted,
-                indicatorColor: AppColors.accentTeal,
-                indicatorWeight: 2.4,
-                dividerColor: AppColors.border,
-                tabs: const [
-                  Tab(text: 'Statistics'),
-                  Tab(text: 'Users'),
-                ],
-              ),
+      body: Column(
+        children: [
+          _buildSegmentedTabs(),
+          Expanded(
+            child: TabBarView(
+              controller: _tabController,
+              children: [
+                _buildStatisticsTab(),
+                _buildUsersTab(),
+                _buildModelTab(),
+              ],
             ),
-            Expanded(
-              child: TabBarView(
-                children: [_buildStatisticsTab(), _buildUsersTab()],
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

@@ -1,4 +1,7 @@
+import 'dart:convert';
+import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:http/http.dart' as http;
 import '../models/chat_model.dart';
 import '../utils/constants.dart';
 
@@ -455,6 +458,126 @@ class FirestoreService {
         .collection(FirestorePaths.predictionsCollection)
         .snapshots()
         .map((s) => s.docs.length);
+  }
+
+  DocumentReference<Map<String, dynamic>> get _currentModelRef {
+    return _firestore
+        .collection(FirestorePaths.modelsCollection)
+        .doc(FirestorePaths.currentModelDoc);
+  }
+
+  Future<Map<String, dynamic>?> getCurrentModel() async {
+    try {
+      final snapshot = await _currentModelRef.get();
+      if (!snapshot.exists) return null;
+      return snapshot.data();
+    } catch (e) {
+      print('❌ Error getting current model: $e');
+      rethrow;
+    }
+  }
+
+  Stream<Map<String, dynamic>?> watchCurrentModel() {
+    return _currentModelRef.snapshots().map((snapshot) {
+      if (!snapshot.exists) return null;
+      return snapshot.data();
+    });
+  }
+
+  bool isTfliteFileName(String fileName) {
+    return fileName.trim().toLowerCase().endsWith('.tflite');
+  }
+
+  Future<Map<String, dynamic>> uploadCurrentModel({
+    required File file,
+    required String fileName,
+    required String updatedBy,
+    void Function(double progress)? onProgress,
+  }) async {
+    final cleanedName = fileName.trim();
+    if (!isTfliteFileName(cleanedName)) {
+      throw Exception('Only .tflite files are allowed');
+    }
+    if (!await file.exists()) {
+      throw Exception('Selected file could not be read');
+    }
+    final size = await file.length();
+    if (size <= 0) {
+      throw Exception('The selected file is empty');
+    }
+
+    onProgress?.call(0.1);
+    final url = await _uploadToCloudinary(
+      file: file,
+      fileName: cleanedName,
+      onProgress: onProgress,
+    );
+    onProgress?.call(1);
+
+    await _currentModelRef.set({
+      'version': cleanedName,
+      'url': url,
+      'updatedAt': FieldValue.serverTimestamp(),
+      'updatedBy': updatedBy,
+    });
+
+    final saved = await _currentModelRef.get();
+    return saved.data() ??
+        {
+          'version': cleanedName,
+          'url': url,
+          'updatedBy': updatedBy,
+        };
+  }
+
+  Future<String> _uploadToCloudinary({
+    required File file,
+    required String fileName,
+    void Function(double progress)? onProgress,
+  }) async {
+    Future<http.StreamedResponse> send(String endpoint) async {
+      final request = http.MultipartRequest('POST', Uri.parse(endpoint));
+      request.fields['upload_preset'] = CloudinaryConfig.uploadPreset;
+      request.files.add(
+        await http.MultipartFile.fromPath(
+          'file',
+          file.path,
+          filename: fileName,
+        ),
+      );
+      return request.send();
+    }
+
+    onProgress?.call(0.35);
+    var response = await send(CloudinaryConfig.rawUploadUrl);
+    var body = await response.stream.bytesToString();
+
+    if (response.statusCode >= 400) {
+      onProgress?.call(0.55);
+      response = await send(CloudinaryConfig.autoUploadUrl);
+      body = await response.stream.bytesToString();
+    }
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_cloudinaryError(body));
+    }
+
+    final decoded = jsonDecode(body);
+    if (decoded is! Map || decoded['secure_url'] == null) {
+      throw Exception('Cloudinary did not return a file URL');
+    }
+    return decoded['secure_url'].toString();
+  }
+
+  String _cloudinaryError(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      final error = decoded is Map ? decoded['error'] : null;
+      if (error is Map && error['message'] != null) {
+        return error['message'].toString();
+      }
+    } catch (_) {}
+    return 'Cloudinary upload failed';
   }
 
   // Get user's chat history (for admin panel)
