@@ -342,8 +342,6 @@ class _AdminScreenState extends State<AdminScreen>
               icon: Icons.analytics,
               color: AppColors.successGreen,
             ),
-            const SizedBox(height: AppSpacing.large),
-            _buildModelCard(),
           ],
         ),
       ),
