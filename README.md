@@ -7,11 +7,6 @@ DermaAI is a Flutter mobile app that gives early skin-care guidance from your ph
 
 > **Disclaimer:** DermaAI provides educational guidance only. It is **not** a medical diagnosis. Please consult a dermatologist for any skin concern.
 
-## Screenshots
-
-| AI prediction | Disease list | Admin panel |
-|:---:|:---:|:---:|
-| <img src="screenshots/prediction.png" width="200"> | <img src="screenshots/disease-list.png" width="200"> | <img src="screenshots/admin-panel.png" width="200"> |
 
 ## The Problem
 
